@@ -1,0 +1,13 @@
+[package]
+name = "kordra-core"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+
+[dependencies]
+anyhow.workspace = true
+chrono.workspace = true
+serde.workspace = true
+sqlx.workspace = true
+tokio.workspace = true
+uuid.workspace = true
