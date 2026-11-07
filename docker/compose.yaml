@@ -1,4 +1,4 @@
-# Pre-alpha headless API only: no Web UI, Telegram bot or TLS yet.
+# Pre-alpha: Web UI enabled by default. Put behind a TLS reverse proxy before public access.
 services:
   kordra:
     build:
@@ -9,7 +9,9 @@ services:
       KORDRA_LISTEN: "0.0.0.0:8079"
       KORDRA_DATA_DIR: /config
       KORDRA_DOWNLOAD_DIR: /downloads
-      KORDRA_API_TOKEN: ${KORDRA_API_TOKEN:?Set a strong local API token}
+      KORDRA_WEB_ENABLED: "${KORDRA_WEB_ENABLED:-true}"
+      KORDRA_WEB_DIR: /usr/share/kordra/web
+      KORDRA_API_TOKEN: ${KORDRA_API_TOKEN:?Provide a strong API token}
     ports:
       - "127.0.0.1:8079:8079"
     volumes:

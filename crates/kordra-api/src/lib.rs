@@ -45,9 +45,17 @@ pub fn router(state: ApiState) -> Router {
         .route("/engines/yt-dlp/rollback", post(rollback_engine))
         .route("/engines/yt-dlp/policy", post(engine_policy))
         .route_layer(middleware::from_fn_with_state(state.clone(), api_auth));
-    Router::new().nest("/api/v1", api)
+    let app = Router::new().nest("/api/v1", api)
         .route("/metrics", get(metrics_endpoint))
-        .with_state(state)
+        .with_state(state);
+    let enabled = std::env::var("KORDRA_WEB_ENABLED")
+        .map(|v| v != "false" && v != "0").unwrap_or(true);
+    if enabled {
+        let web_dir = std::env::var("KORDRA_WEB_DIR").unwrap_or_else(|_| "./apps/web/dist".into());
+        app.fallback_service(tower_http::services::ServeDir::new(web_dir))
+    } else {
+        app
+    }
 }
 fn bearer_matches(headers: &HeaderMap, expected: &str) -> bool {
     let Some(candidate) = headers.get(header::AUTHORIZATION)

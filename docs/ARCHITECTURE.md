@@ -1,28 +1,22 @@
 # Architecture (pre-alpha)
 
-Single universal download queue shared across Desktop, Web, Telegram, CLI and headless interfaces.
+One queue and one server-side task database shared by all interfaces:
 
 ```
-Kordra desktop/web/CLI/Telegram (planned, CLI implemented)
-          | versioned REST / WebSocket (WebSocket planned)
-          v
-   API + auth boundary
-          |
-   SQLite + statistics + scheduler
-          |
-     engine adapters
-          |
- librqbit (default, planned), libtorrent helper (planned),
- yt-dlp standalone (first implemented), aria2, gallery-dl, rclone (planned)
+   React Web UI (initial)    CLI (initial)
+            |                |
+          REST /api/v1  +  /metrics
+                     |
+               Kordra Core
+          SQLite / worker / stats
+                     |
+             Engine adapters
+       yt-dlp standalone (initial)
+       librqbit/libtorrent/aria2/rclone (planned)
 ```
 
-Kordra-Agent is an independently released repository and is designed to manage local Kordra headless instances, not duplicate download engine code. Remote pairing is not yet implemented; agent binds loopback only.
+The Web UI is built using React, TypeScript and Vite and served by the headless daemon as static assets, with no separate web service. When built in Docker, the Web UI is on by default and can be disabled via `KORDRA_WEB_ENABLED=false`. Running without Web assets leaves a functioning headless API.
 
-## Rules
-- Core has no frontend dependency; the desktop shell will use Tauri 2.
-- Engine capabilities are explicit: no phantom controls.
-- External tool versions can be pinned and rolled back; tasks resolve executable path when starting.
-- All downloads use managed paths and subprocesses, never shell interpolation.
-- Public HTTPS/OIDC/multi-user/agent pairing require additional security work; current daemon is local-first.
-- CI and release builds run solely on GitHub-hosted Actions runners; absolutely no personal VPS/staging/server.
-- Plugin permissions are a contract; manifest declarations do not yet enforce sandbox security.
+Planned: Tauri 2 desktop, Telegram bot and Mini App, WebSocket API, extra engines, plugin sandbox, automatic HTTPS and agent-controlled remote devices. Kordra-Agent lives in a separate repository and initially binds to loopback only.
+
+All CI, package builds and tests run **exclusively** on GitHub-hosted GitHub Actions. Personal machines and servers are not development, build or testing hosts.

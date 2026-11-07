@@ -1,20 +1,22 @@
 # Development roadmap
 
-- [x] Create organization and two repositories.
-- [x] Rust workspace, task DB, persistent aggregate metrics, API, CLI and daemon source.
-- [x] yt-dlp external version manager with active/fallback/pin and checksum verification.
-- [x] First yt-dlp worker (limited progress and process control).
-- [x] Plugin SDK manifest (no plugin executor yet).
-- [ ] Green GitHub-hosted CI across Linux and Windows; enforce formatting/Clippy.
-- [ ] Generalize engine manager for Deno, FFmpeg, aria2, gallery-dl, rclone and version selection.
-- [ ] Implement librqbit BitTorrent default; libtorrent in isolated helper.
-- [ ] Retry/resume/pause/cancel, per-engine capabilities, queue scheduling, file operations, task events.
-- [ ] Versioned API with WebSocket, scoped tokens, user accounts and OIDC.
-- [ ] Web UI with one universal downloads view, statistics, themes and draggable panels.
-- [ ] Tauri 2 desktop, Windows .exe/.msi/portable and Linux .deb/.rpm/.AppImage.
-- [ ] Telegram bot and Mini App; configurable Docker components (web on by default).
-- [ ] TLS ACME auto-renew / manual cert / disabled behind reverse proxy.
-- [ ] Fully permissioned sandboxed plugin execution (engines, widgets, automations).
-- [ ] Kordra-Agent pairing, authenticated transport, per-node views and health metrics.
-- [ ] GitHub-hosted builds for x64/arm64 headless and Docker images to GHCR.
-- [ ] Native installers, signatures, supply-chain verification, updater rollback, backups.
+- [x] Organization and two independent GitHub repositories.
+- [x] Rust workspace, SQLite storage, persistent metrics, API, CLI and daemon.
+- [x] yt-dlp managed releases (channels, pin, fallback and verified download).
+- [x] First yt-dlp worker (limited process control, progress and error handling).
+- [x] Initial React + TypeScript Web UI: one queue, task search/filter, statistics, theme and yt-dlp versions.
+- [x] Docker Web UI enabled by default; GHCR tag-publishing workflow written.
+- [x] Plugin SDK manifest schema (loader/sandbox not yet implemented).
+- [ ] Verify Web build and Docker CI on GitHub; fix failures.
+- [ ] General engine catalog: Deno/FFmpeg, aria2c, gallery-dl, rclone.
+- [ ] librqbit (default) and libtorrent helper.
+- [ ] Queue scheduling, pause/retry/resume, cancellation and full process-tree isolation.
+- [ ] WebSocket events and detailed transfer histories.
+- [ ] UI drag/drop editable layouts, advanced themes and i18n.
+- [ ] Tauri 2 desktop and installers for Windows/Linux (MSI/EXE/portable, deb/rpm/AppImage).
+- [ ] Telegram bot and Mini App, toggles for Docker.
+- [ ] Native TLS ACME automatic renewal, manual certificates and disabled/proxy mode.
+- [ ] Fully sandboxed plugin loader/SDK for engines, widgets, automation.
+- [ ] Agent enrollment, authenticated transport, device metrics and shared multi-device queue.
+- [ ] Multi-arch headless packages and GHCR Docker images.
+- [ ] Rust/Node lockfiles and strict formatting checks, security audit, updater signatures.

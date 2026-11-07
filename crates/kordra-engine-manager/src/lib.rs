@@ -186,7 +186,7 @@ impl YtDlpManager {
             if hex::encode(Sha256::digest(&bytes)) != expected { bail!("SHA-256 mismatch"); }
             let dir = path.parent().context("invalid binary path")?;
             tokio::fs::create_dir_all(dir).await?;
-            let staged = dir.join(format!("{asset}.partial"));
+            let staged = dir.join(if cfg!(windows) { format!("{asset}.partial.exe") } else { format!("{asset}.partial") });
             tokio::fs::write(&staged, &bytes).await?;
             #[cfg(unix)] {
                 use std::os::unix::fs::PermissionsExt;

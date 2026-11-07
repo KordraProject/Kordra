@@ -11,4 +11,5 @@ kordra-worker = { path = "../kordra-worker" }
 serde.workspace = true
 serde_json.workspace = true
 subtle = "2"
+tower-http = { version = "0.6", features = ["fs"] }
 tracing.workspace = true
