@@ -1,0 +1,15 @@
+[package]
+name = "kordra-daemon"
+version.workspace = true
+edition.workspace = true
+license.workspace = true
+[dependencies]
+anyhow.workspace = true
+axum.workspace = true
+kordra-api = { path = "../../crates/kordra-api" }
+kordra-core = { path = "../../crates/kordra-core" }
+kordra-engine-manager = { path = "../../crates/kordra-engine-manager" }
+kordra-worker = { path = "../../crates/kordra-worker" }
+tokio.workspace = true
+tracing.workspace = true
+tracing-subscriber.workspace = true
