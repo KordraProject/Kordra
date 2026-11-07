@@ -112,3 +112,8 @@ footer { color: var(--muted); font-size: 12px; padding: 12px 0 26px; }
   .version-actions { grid-column: 1; }
   .input-row input { min-width: 100%; }
 }
+
+.history { min-height: 140px; height: 160px; display: flex; gap: 12px; align-items: end; padding: 18px 4px 4px; }
+.history-col { flex: 1; min-width: 12px; height: 100%; display: flex; flex-direction: column; align-items: stretch; justify-content: end; gap: 6px; }
+.history-bar { width: 100%; min-height: 3px; background: var(--accent); border-radius: 5px 5px 2px 2px; opacity: .85; }
+.history-col span { white-space: nowrap; font-size: 10px; color: var(--muted); text-align: center; }

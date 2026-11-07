@@ -7,7 +7,7 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use kordra_core::{Database, Download, NewDownload, Statistics};
+use kordra_core::{DailyTransfer, Database, Download, EngineTransfer, NewDownload, Statistics};
 use kordra_engine_manager::{Channel, VersionState, YtDlpManager};
 use kordra_worker::Worker;
 use serde::{Deserialize, Serialize};
@@ -38,6 +38,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/downloads", get(list_downloads).post(new_download))
         .route("/downloads/{id}", get(get_download))
         .route("/stats", get(stats))
+        .route("/stats/daily", get(daily_stats))
+        .route("/stats/engines", get(engine_stats))
         .route("/engines/yt-dlp", get(engine_state))
         .route("/engines/yt-dlp/update", post(update_engine))
         .route("/engines/yt-dlp/install/{version}", post(install_engine_version))
@@ -89,6 +91,12 @@ async fn new_download(State(state): State<ApiState>, Json(req): Json<NewDownload
 }
 async fn stats(State(state): State<ApiState>) -> ApiResult<Json<Statistics>> {
     state.db.stats().await.map(Json).map_err(internal)
+}
+async fn daily_stats(State(state): State<ApiState>) -> ApiResult<Json<Vec<DailyTransfer>>> {
+    state.db.daily_stats().await.map(Json).map_err(internal)
+}
+async fn engine_stats(State(state): State<ApiState>) -> ApiResult<Json<Vec<EngineTransfer>>> {
+    state.db.engine_stats().await.map(Json).map_err(internal)
 }
 async fn engine_state(State(state): State<ApiState>) -> ApiResult<Json<VersionState>> {
     state.manager.state().await.map(Json).map_err(internal)

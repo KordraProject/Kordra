@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, post, prettyBytes } from "./api";
-import type { Channel, Download, EngineState, Stats } from "./types";
+import type { Channel, DailyTransfer, Download, EngineState, Stats } from "./types";
 
 const emptyStats: Stats = {
   total_downloaded_bytes: 0, total_uploaded_bytes: 0,
@@ -18,6 +18,7 @@ export default function App() {
   const [tokenDraft, setTokenDraft] = useState(token);
   const [tasks, setTasks] = useState<Download[]>([]);
   const [stats, setStats] = useState<Stats>(emptyStats);
+  const [daily, setDaily] = useState<DailyTransfer[]>([]);
   const [engine, setEngine] = useState<EngineState | null>(null);
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
@@ -35,12 +36,14 @@ export default function App() {
     localStorage.setItem(accentKey, accent);
   }, [theme, accent]);
   const refresh = useCallback(async () => {
-    const [downloadList, summary, state] = await Promise.all([
+    const [downloadList, summary, state, days] = await Promise.all([
       api<Download[]>("/downloads", token), api<Stats>("/stats", token),
-      api<EngineState>("/engines/yt-dlp", token)
+      api<EngineState>("/engines/yt-dlp", token),
+      api<DailyTransfer[]>("/stats/daily", token)
     ]);
     setTasks(downloadList);
     setStats(summary);
+    setDaily(days);
     setEngine(state);
     setLastUpdated(new Date().toLocaleTimeString());
     setError("");
@@ -110,6 +113,20 @@ export default function App() {
           <Stat label="Uploaded" value={prettyBytes(stats.total_uploaded_bytes)} />
           <Stat label="Active tasks" value={stats.active_tasks.toLocaleString()} />
           <Stat label="Completed" value={stats.completed_tasks.toLocaleString()} />
+        </section>
+        <section className="panel">
+          <div className="panel-head"><div><h2>Transfer history</h2><p>Daily downloaded bytes, persisted by the backend.</p></div></div>
+          <div className="history">
+            {(() => {
+              const recent = [...daily].reverse().slice(-14);
+              const maximum = Math.max(1, ...recent.map(item => item.downloaded_bytes));
+              return recent.length ? recent.map(item => <div className="history-col" key={item.day}
+                title={`${item.day}: ${prettyBytes(item.downloaded_bytes)}`}>
+                <div className="history-bar" style={{height: `${Math.max(4, 100 * item.downloaded_bytes / maximum)}%`}} />
+                <span>{item.day.slice(5)}</span>
+              </div>) : <p>No traffic recorded yet.</p>;
+            })()}
+          </div>
         </section>
         <section className="panel">
           <form onSubmit={addTask} className="add-form">

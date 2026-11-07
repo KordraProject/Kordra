@@ -9,6 +9,8 @@ Default bind: `http://127.0.0.1:8079`. Optional bearer token via `KORDRA_API_TOK
 | GET | /api/v1/downloads/{id} | One task |
 | POST | /api/v1/downloads | `{"source":"https://...","engine":"yt-dlp"}`; returns 501 for unimplemented engines |
 | GET | /api/v1/stats | Persistent totals |
+| GET | /api/v1/stats/daily | Recent daily transfer bytes |
+| GET | /api/v1/stats/engines | Grouped task stats by engine |
 | GET | /api/v1/engines/yt-dlp | Active, fallback, pinned and installed versions |
 | POST | /api/v1/engines/yt-dlp/update | `{"channel":"stable","activate":true}` |
 | POST | /api/v1/engines/yt-dlp/install/{version} | `{"channel":"stable","activate":false}` |

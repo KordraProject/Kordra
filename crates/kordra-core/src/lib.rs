@@ -35,6 +35,19 @@ pub struct Statistics {
     pub active_tasks: i64,
 }
 
+#[derive(Debug, Serialize, FromRow)]
+pub struct DailyTransfer {
+    pub day: String,
+    pub downloaded_bytes: i64,
+}
+#[derive(Debug, Serialize, FromRow)]
+pub struct EngineTransfer {
+    pub engine: String,
+    pub total_tasks: i64,
+    pub downloaded_bytes: i64,
+    pub completed_tasks: i64,
+}
+
 impl Database {
     pub async fn open(data_dir: &Path) -> Result<Self> {
         tokio::fs::create_dir_all(data_dir).await?;
@@ -56,6 +69,9 @@ impl Database {
             failed_tasks INTEGER NOT NULL DEFAULT 0
         )"#).execute(&pool).await?;
         sqlx::query("INSERT OR IGNORE INTO transfer_totals(id) VALUES (1)").execute(&pool).await?;
+        sqlx::query(r#"CREATE TABLE IF NOT EXISTS daily_transfers (
+            day TEXT PRIMARY KEY, downloaded_bytes INTEGER NOT NULL DEFAULT 0
+        )"#).execute(&pool).await?;
         // Tasks interrupted by previous process termination are not silently retried.
         sqlx::query("UPDATE downloads SET status = 'interrupted', updated_at = ? WHERE status = 'running'")
             .bind(Utc::now().to_rfc3339()).execute(&pool).await?;
@@ -106,6 +122,10 @@ impl Database {
                 .bind(observed).bind(Utc::now().to_rfc3339()).bind(id).execute(&mut *tx).await?;
             sqlx::query("UPDATE transfer_totals SET total_downloaded_bytes = total_downloaded_bytes + ? WHERE id = 1")
                 .bind(delta).execute(&mut *tx).await?;
+            sqlx::query(r#"INSERT INTO daily_transfers(day, downloaded_bytes) VALUES(?, ?)
+                ON CONFLICT(day) DO UPDATE SET downloaded_bytes = downloaded_bytes + excluded.downloaded_bytes"#)
+                .bind(Utc::now().format("%Y-%m-%d").to_string()).bind(delta)
+                .execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -122,6 +142,19 @@ impl Database {
         }
         tx.commit().await?;
         Ok(())
+    }
+    pub async fn daily_stats(&self) -> Result<Vec<DailyTransfer>> {
+        Ok(sqlx::query_as::<_, DailyTransfer>(
+            "SELECT day, downloaded_bytes FROM daily_transfers ORDER BY day DESC LIMIT 365"
+        ).fetch_all(&self.pool).await?)
+    }
+    pub async fn engine_stats(&self) -> Result<Vec<EngineTransfer>> {
+        Ok(sqlx::query_as::<_, EngineTransfer>(r#"SELECT engine,
+            COUNT(*) AS total_tasks,
+            COALESCE(SUM(downloaded_bytes), 0) AS downloaded_bytes,
+            SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_tasks
+            FROM downloads GROUP BY engine ORDER BY downloaded_bytes DESC"#)
+            .fetch_all(&self.pool).await?)
     }
     pub async fn stats(&self) -> Result<Statistics> {
         Ok(sqlx::query_as::<_, Statistics>(r#"SELECT t.total_downloaded_bytes,
@@ -151,6 +184,8 @@ mod tests {
         assert_eq!(s.total_downloaded_bytes, 100);
         assert_eq!(s.completed_tasks, 1);
         assert_eq!(s.total_tasks, 1);
+        assert_eq!(db.daily_stats().await.unwrap()[0].downloaded_bytes, 100);
+        assert_eq!(db.engine_stats().await.unwrap()[0].completed_tasks, 1);
         drop(db);
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
