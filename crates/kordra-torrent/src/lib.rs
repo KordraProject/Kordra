@@ -1,6 +1,6 @@
 //! Embedded BitTorrent session with hot/cold startup and idle teardown.
 use anyhow::{bail, Context, Result};
-use librqbit::{AddTorrent, AddTorrentResponse, ManagedTorrent, Session};
+use librqbit::{api::TorrentIdOrHash, AddTorrent, AddTorrentResponse, ManagedTorrent, Session};
 use serde_json::{json, Value};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
@@ -81,6 +81,23 @@ impl TorrentEngine {
             "output_folder": handle.output_folder().to_string_lossy(),
             "only_files": handle.only_files(), "trackers": trackers, "stats": stats
         }))
+    }
+    /// Stop managing a torrent without touching files. Must serialize with add/stop.
+    pub async fn forget_task(&self, task_id: &str) -> Result<()> {
+        let _operation = self.operations.lock().await;
+        let handle = self.active.read().await.get(task_id).cloned()
+            .context("torrent is not active in this session")?;
+        let session = self.session.lock().await.as_ref().cloned()
+            .context("torrent session is not running")?;
+        session.delete(TorrentIdOrHash::Id(handle.id()), false).await
+            .context("forgetting torrent without removing downloaded files")?;
+        self.active.write().await.remove(task_id);
+        Ok(())
+    }
+    pub async fn transfer_snapshot(&self, task_id: &str) -> Option<(u64, u64, u64)> {
+        let handle = self.active.read().await.get(task_id).cloned()?;
+        let stats = handle.stats();
+        Some((stats.progress_bytes, stats.uploaded_bytes, stats.total_bytes))
     }
     pub async fn has_task(&self, task_id: &str) -> bool {
         self.active.read().await.contains_key(task_id)

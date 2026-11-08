@@ -11,3 +11,9 @@ Current limitations:
 - The main system's concurrency semaphore limits active download workers, not ongoing seeding.
 - The code has compile/unit CI only, not full live integration tests against test torrents.
 - HTTP(S) .torrent URLs are allowed; local filesystem torrent filenames are not accepted through the remote API.
+
+## Cancel and stop seeding
+
+The universal queue's Cancel action now supports live torrents. Kordra asks librqbit to forget the torrent with `Session::delete(..., false)`, preserving all on-disk files. The task becomes `cancelled`, not `failed`. During initial magnet metadata resolution, cancellation may be unavailable until the managed handle is created.
+
+A completed torrent can stop uploading with `POST /api/v1/downloads/{id}/stop-seeding`. This preserves the completed history and local files. In cold/temporary mode seeding is already stopped automatically when the final torrent completes.
