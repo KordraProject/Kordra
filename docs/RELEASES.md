@@ -15,3 +15,7 @@ The release refuses to publish if even one required desktop package is missing o
 **Planned, not shipped yet:** Windows ARM64 desktop/headless and Linux ARM64 desktop installers; reliable portable data mode, native Tauri background service/tray, signing, Telegram, TLS and fully featured downloader engines.
 
 On release pushes, existing CI and desktop workflows are invoked as reusable workflows by the unified pipeline to prevent duplicate compilation. No VPS, personal server or self-hosted runner is used in development, build or testing.
+
+## Native multiarch builds
+
+Docker images are compiled on two independent **GitHub-hosted** Ubuntu runners: `ubuntu-24.04` for amd64 and `ubuntu-24.04-arm` for arm64. No QEMU emulation or personal servers are used. The build pushes two immutable commit-qualified platform tags, then combines them via `docker buildx imagetools create`. The release pipeline requires a successful multiarchitecture manifest before publishing release assets. BuildKit cache scopes are isolated by architecture. 

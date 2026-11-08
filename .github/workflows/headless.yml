@@ -67,41 +67,74 @@ jobs:
     uses: ./.github/workflows/desktop.yml
 
   docker:
+    name: Docker native / ${{ matrix.arch }}
     needs: validate
-    runs-on: ubuntu-24.04
+    runs-on: ${{ matrix.os }}
     timeout-minutes: 120
     permissions:
       contents: read
       packages: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-24.04
+            arch: amd64
+          - os: ubuntu-24.04-arm
+            arch: arm64
     steps:
       - uses: actions/checkout@v4
-      - uses: docker/setup-qemu-action@v3
       - uses: docker/setup-buildx-action@v3
       - uses: docker/login-action@v3
         with:
           registry: ghcr.io
           username: ${{ github.actor }}
           password: ${{ secrets.GITHUB_TOKEN }}
-      - uses: docker/metadata-action@v5
-        id: meta
-        with:
-          images: ghcr.io/kordraproject/kordra
-          tags: |
-            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
-            type=sha,format=long
-            type=ref,event=tag
-      - uses: docker/build-push-action@v6
+      - name: Compile and push native single-platform image
+        uses: docker/build-push-action@v6
         with:
           context: .
           file: docker/Dockerfile
-          platforms: linux/amd64,linux/arm64
+          platforms: linux/${{ matrix.arch }}
           push: true
-          tags: ${{ steps.meta.outputs.tags }}
-          labels: ${{ steps.meta.outputs.labels }}
+          tags: ghcr.io/kordraproject/kordra:sha-${{ github.sha }}-${{ matrix.arch }}
+          cache-from: type=gha,scope=native-${{ matrix.arch }}
+          cache-to: type=gha,mode=max,scope=native-${{ matrix.arch }}
+
+  docker-manifest:
+    name: Publish verified multi-architecture manifest
+    needs: docker
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Publish multiarch tags from two native images
+        shell: bash
+        env:
+          IMAGE: ghcr.io/kordraproject/kordra
+        run: |
+          set -euo pipefail
+          tags=( -t "$IMAGE:sha-$GITHUB_SHA" )
+          if [[ "$GITHUB_REF" == "refs/heads/main" ]]; then
+            tags+=( -t "$IMAGE:edge" )
+          elif [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+            tags+=( -t "$IMAGE:$GITHUB_REF_NAME" )
+          fi
+          docker buildx imagetools create "${tags[@]}" \
+            "$IMAGE:sha-$GITHUB_SHA-amd64" \
+            "$IMAGE:sha-$GITHUB_SHA-arm64"
+          docker buildx imagetools inspect "$IMAGE:sha-$GITHUB_SHA"
 
   release:
     name: Publish complete pre-alpha
-    needs: [validate, headless, desktop, docker]
+    needs: [validate, headless, desktop, docker-manifest]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
