@@ -1,7 +1,6 @@
+//! Safe, managed yt-dlp standalone releases.
 mod deno;
-pub use deno::{DenoManager, DenoState};
-
-//! Safe, managed yt-dlp standalone releases. Deno/FFmpeg catalogs follow later.
+pub use deno::{DenoManager, DenoState}; Deno/FFmpeg catalogs follow later.
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;
 use serde::{Deserialize, Serialize};
