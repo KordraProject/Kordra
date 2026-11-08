@@ -47,11 +47,12 @@ jobs:
         run: |
           sudo apt-get update
           sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf rpm
-      - name: Install frontend dependencies
-        shell: bash
-        run: |
-          npm --prefix apps/web install --no-audit --no-fund
-          npm --prefix apps/desktop install --no-audit --no-fund
+      - name: Install Web dependencies
+        working-directory: apps/web
+        run: npm install --no-audit --no-fund
+      - name: Install Tauri CLI
+        working-directory: apps/desktop
+        run: npm install --no-audit --no-fund
       - name: Build headless sidecar
         run: cargo build --release -p kordra-daemon -p kordra-cli
       - name: Generate icon and platform sidecar
@@ -71,11 +72,14 @@ jobs:
           shutil.copy2(source, dest)
           print(f"Sidecar: {dest}")
           PY
-      - name: Build Tauri desktop packages
+      - name: Compile Web UI for desktop
+        working-directory: apps/web
         env:
           VITE_KORDRA_API_BASE: http://127.0.0.1:8079
-        shell: bash
-        run: npm --prefix apps/desktop run build -- --bundles ${{ matrix.bundles }}
+        run: npm run build
+      - name: Build Tauri desktop packages
+        working-directory: apps/desktop
+        run: npm run build -- --bundles ${{ matrix.bundles }}
       - name: Collect installers and portable archive
         shell: bash
         env:

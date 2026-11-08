@@ -4,7 +4,7 @@
   "version": "0.1.0",
   "identifier": "com.kordraproject.kordra",
   "build": {
-    "beforeBuildCommand": "npm --prefix ../web run build",
+    "beforeBuildCommand": null,
     "frontendDist": "../../web/dist"
   },
   "app": {
