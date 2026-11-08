@@ -37,6 +37,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/health", get(health))
         .route("/downloads", get(list_downloads).post(new_download))
         .route("/downloads/{id}", get(get_download))
+        .route("/downloads/{id}/pause", post(pause_download))
+        .route("/downloads/{id}/resume", post(resume_download))
         .route("/engines/capabilities", get(capabilities))
         .route("/stats", get(stats))
         .route("/stats/daily", get(daily_stats))
@@ -81,6 +83,12 @@ async fn list_downloads(State(state): State<ApiState>) -> ApiResult<Json<Vec<Dow
 async fn get_download(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<Download>> {
     state.db.get(&id).await.map_err(internal)?
         .map(Json).ok_or_else(|| (StatusCode::NOT_FOUND, Json(ErrorBody { error: "task not found".into() })))
+}
+async fn pause_download(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<Download>> {
+    state.worker.pause(&id).await.map(Json).map_err(invalid)
+}
+async fn resume_download(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<Download>> {
+    state.worker.resume(&id).await.map(Json).map_err(invalid)
 }
 async fn new_download(State(state): State<ApiState>, Json(req): Json<NewDownload>) -> ApiResult<(StatusCode, Json<Download>)> {
     if req.engine != "yt-dlp" && req.engine != "librqbit" {

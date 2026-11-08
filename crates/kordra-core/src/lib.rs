@@ -111,6 +111,13 @@ impl Database {
         Ok(task)
     }
 
+    pub async fn transition(&self, id: &str, from: &str, to: &str) -> Result<bool> {
+        // Internal state machine operation. Callers must validate the allowed transition.
+        let result = sqlx::query("UPDATE downloads SET status = ?, updated_at = ? WHERE id = ? AND status = ?")
+            .bind(to).bind(Utc::now().to_rfc3339()).bind(id).bind(from)
+            .execute(&self.pool).await?;
+        Ok(result.rows_affected() == 1)
+    }
     pub async fn set_running(&self, id: &str) -> Result<bool> {
         let result = sqlx::query("UPDATE downloads SET status = 'running', error = NULL, updated_at = ? WHERE id = ? AND status = 'queued'")
             .bind(Utc::now().to_rfc3339()).bind(id).execute(&self.pool).await?;
@@ -124,7 +131,7 @@ impl Database {
         let uploaded = i64::try_from(uploaded)?;
         let total = i64::try_from(total)?;
         let mut tx = self.pool.begin().await?;
-        let result = sqlx::query("SELECT downloaded_bytes, uploaded_bytes FROM downloads WHERE id = ? AND status IN ('running', 'completed')")
+        let result = sqlx::query("SELECT downloaded_bytes, uploaded_bytes FROM downloads WHERE id = ? AND status IN ('running', 'paused', 'completed')")
             .bind(id).fetch_optional(&mut *tx).await?;
         let Some(row) = result else { bail!("running task not found"); };
         use sqlx::Row;

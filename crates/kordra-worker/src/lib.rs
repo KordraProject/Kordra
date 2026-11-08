@@ -1,6 +1,6 @@
 //! First real task executor: yt-dlp as a managed child process (no shell).
 //! Full job cancellation, process-tree supervision and media selection follow later.
-use anyhow::{Context, Result};
+use anyhow::{bail, Context, Result};
 use kordra_core::{Database, Download};
 use kordra_engine_manager::YtDlpManager;
 use kordra_torrent::TorrentEngine;
@@ -31,6 +31,44 @@ impl Worker {
             }
         });
     }
+    /// Pause queued tasks, or active librqbit torrents. yt-dlp process suspension is planned.
+    pub async fn pause(&self, id: &str) -> Result<Download> {
+        let item = self.db.get(id).await?.context("task not found")?;
+        match item.status.as_str() {
+            "queued" => {
+                if !self.db.transition(id, "queued", "paused").await? {
+                    bail!("task changed state before it could be paused");
+                }
+            }
+            "running" if item.engine == "librqbit" => {
+                self.torrents.pause_task(id).await?;
+                if !self.db.transition(id, "running", "paused").await? {
+                    let _ = self.torrents.resume_task(id).await;
+                    bail!("task changed state while pausing");
+                }
+            }
+            _ => bail!("pause is not supported for this task state or engine"),
+        }
+        self.db.get(id).await?.context("task not found")
+    }
+
+    /// Resumes a paused torrent within the live session, or requeues a paused task.
+    pub async fn resume(&self, id: &str) -> Result<Download> {
+        let item = self.db.get(id).await?.context("task not found")?;
+        if item.status != "paused" { bail!("task is not paused"); }
+        if item.engine == "librqbit" && self.torrents.has_task(id).await {
+            self.torrents.resume_task(id).await?;
+            if !self.db.transition(id, "paused", "running").await? {
+                let _ = self.torrents.pause_task(id).await;
+                bail!("task changed state during resume");
+            }
+        } else {
+            if !self.db.transition(id, "paused", "queued").await? { bail!("task changed state"); }
+            self.enqueue(item);
+        }
+        self.db.get(id).await?.context("task not found")
+    }
+
     pub async fn enqueue_pending(&self) -> Result<()> {
         for task in self.db.list().await? {
             if task.status == "queued" { self.enqueue(task); }
@@ -47,7 +85,7 @@ impl Worker {
         }
     }
     async fn run_torrent(&self, task: Download) -> Result<()> {
-        let handle = self.torrents.add(&task.source).await?;
+        let handle = self.torrents.add(&task.id, &task.source).await?;
         let mut ticks = tokio::time::interval(Duration::from_secs(2));
         let completed = handle.wait_until_completed();
         tokio::pin!(completed);

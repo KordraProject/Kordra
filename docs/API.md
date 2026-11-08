@@ -7,6 +7,8 @@ Default bind: `http://127.0.0.1:8079`. Optional bearer token via `KORDRA_API_TOK
 | GET | /api/v1/health | Health |
 | GET | /api/v1/downloads | Up to 500 most recent tasks |
 | GET | /api/v1/downloads/{id} | One task |
+| POST | /api/v1/downloads/{id}/pause | Pause queued tasks or active librqbit torrents |
+| POST | /api/v1/downloads/{id}/resume | Resume paused task (requeue or unpause torrent) |
 | GET | /api/v1/engines/capabilities | Discover implemented engines and capabilities |
 | POST | /api/v1/downloads | `{"source":"https://...","engine":"yt-dlp"}` or `{"source":"magnet:?xt=...","engine":"librqbit"}`; returns 501 for unimplemented engines |
 | GET | /api/v1/stats | Persistent totals |

@@ -154,7 +154,7 @@ export default function App() {
               onChange={event => setSearch(event.target.value)} />
           </div>
           <div className="table-wrap"><table><thead><tr>
-            <th>Source</th><th>Engine</th><th>State</th><th>Progress</th><th>Received / Upload</th>
+            <th>Source</th><th>Engine</th><th>State</th><th>Progress</th><th>Received / Upload</th><th>Controls</th>
           </tr></thead><tbody>
             {visible.map(task => <tr key={task.id}>
               <td><span className="source-cell" title={task.source}>{task.source}</span>{task.error && <small className="error-text">{task.error}</small>}</td>
@@ -164,8 +164,15 @@ export default function App() {
                 <div className="task-bar"><div style={{width: `${Math.min(100, 100 * task.downloaded_bytes / task.total_bytes)}%`}} /></div>
               </div> : "—"}</td>
               <td>{prettyBytes(task.downloaded_bytes)} / {prettyBytes(task.uploaded_bytes)}</td>
+              <td>{(task.status === "queued" || (task.status === "running" && task.engine === "librqbit")) &&
+                <button className="button secondary" disabled={busy}
+                  onClick={() => void operation(() => post(`/downloads/${task.id}/pause`, token))}>Pause</button>}
+                {task.status === "paused" &&
+                <button className="button secondary" disabled={busy}
+                  onClick={() => void operation(() => post(`/downloads/${task.id}/resume`, token))}>Resume</button>}
+              </td>
             </tr>)}
-            {!visible.length && <tr><td colSpan={5} className="empty">No matching downloads yet.</td></tr>}
+            {!visible.length && <tr><td colSpan={6} className="empty">No matching downloads yet.</td></tr>}
           </tbody></table></div>
         </section>
         <section className="panel">

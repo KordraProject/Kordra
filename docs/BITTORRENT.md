@@ -7,7 +7,7 @@ During an active transfer Kordra polls completed bytes, uploaded bytes and total
 Current limitations:
 - libtorrent-rasterbar is **not** yet integrated; issue #2 tracks it.
 - Session persistence and automatic torrent recovery after daemon restart are not implemented.
-- No file selection, tracker management, pause/resume API or .torrent file upload yet.
+- Pause/resume of active torrents is available via the shared task API; file selection, tracker management and .torrent file upload are not yet available.
 - The main system's concurrency semaphore limits active download workers, not ongoing seeding.
 - The code has compile/unit CI only, not full live integration tests against test torrents.
 - HTTP(S) .torrent URLs are allowed; local filesystem torrent filenames are not accepted through the remote API.

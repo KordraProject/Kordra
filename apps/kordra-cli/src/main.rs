@@ -22,6 +22,8 @@ enum Operation {
     InstallYtdlp { version: String, #[arg(long, default_value = "stable")] channel: String },
     ActivateYtdlp { version: String },
     RollbackYtdlp,
+    Pause { id: String },
+    Resume { id: String },
 }
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -40,6 +42,8 @@ async fn main() -> Result<()> {
             Some(serde_json::json!({"channel":channel,"activate":false}))),
         Operation::ActivateYtdlp { version } => (true, format!("/engines/yt-dlp/activate/{version}"), None),
         Operation::RollbackYtdlp => (true, "/engines/yt-dlp/rollback".into(), None),
+        Operation::Pause { id } => (true, format!("/downloads/{id}/pause"), None),
+        Operation::Resume { id } => (true, format!("/downloads/{id}/resume"), None),
     };
     let client = reqwest::Client::new();
     let request = if post { client.post(format!("{url}{route}")) } else { client.get(format!("{url}{route}")) };
