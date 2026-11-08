@@ -3,19 +3,21 @@
 use anyhow::{Context, Result};
 use kordra_core::{Database, Download};
 use kordra_engine_manager::YtDlpManager;
-use std::{path::PathBuf, process::Stdio, sync::Arc};
+use kordra_torrent::TorrentEngine;
+use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command, sync::Semaphore};
 
 #[derive(Clone)]
 pub struct Worker {
     db: Database,
     manager: YtDlpManager,
+    torrents: TorrentEngine,
     downloads: PathBuf,
     limit: Arc<Semaphore>,
 }
 impl Worker {
     pub fn new(db: Database, manager: YtDlpManager, downloads: PathBuf, concurrency: usize) -> Self {
-        Self { db, manager, downloads, limit: Arc::new(Semaphore::new(concurrency.max(1))) }
+        Self { db, manager, torrents: TorrentEngine::new(downloads.clone()), downloads, limit: Arc::new(Semaphore::new(concurrency.max(1))) }
     }
     pub fn enqueue(&self, item: Download) {
         let this = self.clone();
@@ -38,6 +40,48 @@ impl Worker {
     async fn run(&self, task: Download) -> Result<()> {
         let _permit = self.limit.acquire().await?;
         if !self.db.set_running(&task.id).await? { return Ok(()); }
+        match task.engine.as_str() {
+            "yt-dlp" => self.run_ytdlp(task).await,
+            "librqbit" => self.run_torrent(task).await,
+            other => anyhow::bail!("unsupported engine: {other}"),
+        }
+    }
+    async fn run_torrent(&self, task: Download) -> Result<()> {
+        let handle = self.torrents.add(&task.source).await?;
+        let mut ticks = tokio::time::interval(Duration::from_secs(2));
+        let completed = handle.wait_until_completed();
+        tokio::pin!(completed);
+        loop {
+            tokio::select! {
+                result = &mut completed => {
+                    result?;
+                    let stats = handle.stats();
+                    self.db.observe_transfer(&task.id, stats.progress_bytes, stats.uploaded_bytes, stats.total_bytes).await?;
+                    self.db.finish(&task.id, true, None).await?;
+                    break;
+                }
+                _ = ticks.tick() => {
+                    let stats = handle.stats();
+                    self.db.observe_transfer(&task.id, stats.progress_bytes, stats.uploaded_bytes, stats.total_bytes).await?;
+                }
+            }
+        }
+        // The rqbit session continues seeding until Kordra exits. Upload counters remain visible.
+        let db = self.db.clone();
+        let id = task.id.clone();
+        tokio::spawn(async move {
+            loop {
+                tokio::time::sleep(Duration::from_secs(10)).await;
+                let stats = handle.stats();
+                if let Err(error) = db.observe_transfer(&id, stats.progress_bytes, stats.uploaded_bytes, stats.total_bytes).await {
+                    tracing::warn!(task_id=%id, "seeding stats unavailable: {error:#}");
+                    break;
+                }
+            }
+        });
+        Ok(())
+    }
+    async fn run_ytdlp(&self, task: Download) -> Result<()> {
         let binary = self.manager.ensure_active().await?;
         tokio::fs::create_dir_all(&self.downloads).await?;
         let mut child = Command::new(binary)

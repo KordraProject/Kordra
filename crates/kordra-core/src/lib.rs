@@ -17,6 +17,7 @@ pub struct Download {
     pub status: String,
     pub downloaded_bytes: i64,
     pub uploaded_bytes: i64,
+    pub total_bytes: i64,
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -61,6 +62,11 @@ impl Database {
             uploaded_bytes INTEGER NOT NULL DEFAULT 0, error TEXT,
             created_at TEXT NOT NULL, updated_at TEXT NOT NULL
         )"#).execute(&pool).await?;
+        if sqlx::query("SELECT name FROM pragma_table_info('downloads') WHERE name = 'total_bytes'")
+            .fetch_optional(&pool).await?.is_none() {
+            sqlx::query("ALTER TABLE downloads ADD COLUMN total_bytes INTEGER NOT NULL DEFAULT 0")
+                .execute(&pool).await?;
+        }
         sqlx::query(r#"CREATE TABLE IF NOT EXISTS transfer_totals (
             id INTEGER PRIMARY KEY CHECK(id = 1),
             total_downloaded_bytes INTEGER NOT NULL DEFAULT 0,
@@ -88,14 +94,16 @@ impl Database {
     }
     pub async fn create(&self, req: NewDownload) -> Result<Download> {
         if req.source.trim().is_empty() || req.source.len() > 4096 { bail!("invalid source"); }
-        if req.engine != "yt-dlp" { bail!("engine is not implemented yet"); }
-        if !(req.source.starts_with("https://") || req.source.starts_with("http://")) {
-            bail!("yt-dlp source must be an HTTP(S) URL");
+        if req.engine != "yt-dlp" && req.engine != "librqbit" { bail!("engine is not implemented yet"); }
+        let http = req.source.starts_with("https://") || req.source.starts_with("http://");
+        if (req.engine == "yt-dlp" && !http)
+            || (req.engine == "librqbit" && !http && !req.source.starts_with("magnet:?")) {
+            bail!("unsupported source for requested engine");
         }
         let now = Utc::now().to_rfc3339();
         let task = Download { id: Uuid::new_v4().to_string(), source: req.source,
             engine: req.engine, status: "queued".into(), downloaded_bytes: 0,
-            uploaded_bytes: 0, error: None, created_at: now.clone(), updated_at: now };
+            uploaded_bytes: 0, total_bytes: 0, error: None, created_at: now.clone(), updated_at: now };
         sqlx::query("INSERT INTO downloads(id, source, engine, status, downloaded_bytes, uploaded_bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&task.id).bind(&task.source).bind(&task.engine).bind(&task.status)
             .bind(task.downloaded_bytes).bind(task.uploaded_bytes).bind(&task.created_at)
@@ -109,23 +117,33 @@ impl Database {
         Ok(result.rows_affected() == 1)
     }
     pub async fn observe_received(&self, id: &str, observed: u64) -> Result<()> {
-        let observed = i64::try_from(observed)?;
+        self.observe_transfer(id, observed, 0, 0).await
+    }
+    pub async fn observe_transfer(&self, id: &str, downloaded: u64, uploaded: u64, total: u64) -> Result<()> {
+        let downloaded = i64::try_from(downloaded)?;
+        let uploaded = i64::try_from(uploaded)?;
+        let total = i64::try_from(total)?;
         let mut tx = self.pool.begin().await?;
-        let result = sqlx::query("SELECT downloaded_bytes FROM downloads WHERE id = ? AND status = 'running'")
+        let result = sqlx::query("SELECT downloaded_bytes, uploaded_bytes FROM downloads WHERE id = ? AND status IN ('running', 'completed')")
             .bind(id).fetch_optional(&mut *tx).await?;
         let Some(row) = result else { bail!("running task not found"); };
         use sqlx::Row;
         let previous: i64 = row.try_get(0)?;
-        let delta = observed.saturating_sub(previous);
-        if delta > 0 {
-            sqlx::query("UPDATE downloads SET downloaded_bytes = ?, updated_at = ? WHERE id = ?")
-                .bind(observed).bind(Utc::now().to_rfc3339()).bind(id).execute(&mut *tx).await?;
-            sqlx::query("UPDATE transfer_totals SET total_downloaded_bytes = total_downloaded_bytes + ? WHERE id = 1")
-                .bind(delta).execute(&mut *tx).await?;
-            sqlx::query(r#"INSERT INTO daily_transfers(day, downloaded_bytes) VALUES(?, ?)
-                ON CONFLICT(day) DO UPDATE SET downloaded_bytes = downloaded_bytes + excluded.downloaded_bytes"#)
-                .bind(Utc::now().format("%Y-%m-%d").to_string()).bind(delta)
-                .execute(&mut *tx).await?;
+        let previous_upload: i64 = row.try_get(1)?;
+        let delta_download = downloaded.saturating_sub(previous);
+        let delta_upload = uploaded.saturating_sub(previous_upload);
+        sqlx::query("UPDATE downloads SET downloaded_bytes = MAX(downloaded_bytes, ?), uploaded_bytes = MAX(uploaded_bytes, ?), total_bytes = MAX(total_bytes, ?), updated_at = ? WHERE id = ?")
+            .bind(downloaded).bind(uploaded).bind(total).bind(Utc::now().to_rfc3339()).bind(id)
+            .execute(&mut *tx).await?;
+        if delta_download > 0 || delta_upload > 0 {
+            sqlx::query("UPDATE transfer_totals SET total_downloaded_bytes = total_downloaded_bytes + ?, total_uploaded_bytes = total_uploaded_bytes + ? WHERE id = 1")
+                .bind(delta_download).bind(delta_upload).execute(&mut *tx).await?;
+            if delta_download > 0 {
+                sqlx::query(r#"INSERT INTO daily_transfers(day, downloaded_bytes) VALUES(?, ?)
+                    ON CONFLICT(day) DO UPDATE SET downloaded_bytes = downloaded_bytes + excluded.downloaded_bytes"#)
+                    .bind(Utc::now().format("%Y-%m-%d").to_string()).bind(delta_download)
+                    .execute(&mut *tx).await?;
+            }
         }
         tx.commit().await?;
         Ok(())
@@ -182,6 +200,7 @@ mod tests {
         db.finish(&task.id, true, None).await.unwrap();
         let s = db.stats().await.unwrap();
         assert_eq!(s.total_downloaded_bytes, 100);
+        assert_eq!(s.total_uploaded_bytes, 0);
         assert_eq!(s.completed_tasks, 1);
         assert_eq!(s.total_tasks, 1);
         assert_eq!(db.daily_stats().await.unwrap()[0].downloaded_bytes, 100);

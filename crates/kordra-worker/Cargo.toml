@@ -7,5 +7,6 @@ license.workspace = true
 anyhow.workspace = true
 kordra-core = { path = "../kordra-core" }
 kordra-engine-manager = { path = "../kordra-engine-manager" }
+kordra-torrent = { path = "../kordra-torrent" }
 tokio.workspace = true
 tracing.workspace = true
