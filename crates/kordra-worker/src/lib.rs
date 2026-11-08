@@ -115,11 +115,45 @@ impl Worker {
                 }
                 token.cancel();
             }
+            "running" | "paused" if item.engine == "librqbit" => {
+                if !self.torrents.has_task(id).await {
+                    bail!("torrent is not yet active (magnet resolution may still be running)");
+                }
+                if let Some((down, up, size)) = self.torrents.transfer_snapshot(id).await {
+                    self.db.observe_transfer(id, down, up, size).await?;
+                }
+                if !self.db.transition(id, &item.status, "cancelling").await? {
+                    bail!("task state changed before cancellation");
+                }
+                if let Err(error) = self.torrents.forget_task(id).await {
+                    let _ = self.db.transition(id, "cancelling", &item.status).await;
+                    return Err(error);
+                }
+                self.db.finish_cancelled(id).await?;
+                if !self.lifecycle.get().await.retain_after_use() {
+                    self.torrents.cool_if_idle().await;
+                }
+            }
             _ => bail!("cancellation is unsupported for this engine or task state"),
         }
         self.db.get(id).await?.context("task not found")
     }
 
+    /// Stop seeding without changing successful task history or deleting files.
+    pub async fn stop_seeding(&self, id: &str) -> Result<Download> {
+        let task = self.db.get(id).await?.context("task not found")?;
+        if task.engine != "librqbit" || task.status != "completed" {
+            bail!("only completed and actively seeding torrents can stop seeding");
+        }
+        if let Some((down, up, size)) = self.torrents.transfer_snapshot(id).await {
+            self.db.observe_transfer(id, down, up, size).await?;
+        }
+        self.torrents.forget_task(id).await?;
+        if !self.lifecycle.get().await.retain_after_use() {
+            self.torrents.cool_if_idle().await;
+        }
+        self.db.get(id).await?.context("task not found")
+    }
     pub async fn torrent_details(&self, id: &str) -> Result<serde_json::Value> {
         self.torrents.details(id).await.context("torrent is not active in this process")
     }
@@ -213,6 +247,11 @@ impl Worker {
                 }
             }
         }
+        // The torrent might have been removed concurrently with completion.
+        if self.db.get(&task.id).await?.is_some_and(|record| record.status != "completed") {
+            return Ok(());
+        }
+        if !self.torrents.has_task(&task.id).await { return Ok(()); }
         if !self.lifecycle.get().await.retain_after_use() {
             // Temporary cold mode stops seeding and releases the session once the
             // last active torrent finishes. Persistent/hot mode continues seeding.
@@ -223,9 +262,11 @@ impl Worker {
         let db = self.db.clone();
         let id = task.id.clone();
         let seeding_handle = handle.clone();
+        let torrents = self.torrents.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(10)).await;
+                if !torrents.has_task(&id).await { break; }
                 let stats = seeding_handle.stats();
                 if let Err(error) = db.observe_transfer(&id, stats.progress_bytes, stats.uploaded_bytes, stats.total_bytes).await {
                     tracing::warn!(task_id=%id, "seeding stats unavailable: {error:#}");

@@ -185,8 +185,7 @@ export default function App() {
                 {task.status === "paused" &&
                 <button className="button secondary" disabled={busy}
                   onClick={() => void operation(() => post(`/downloads/${task.id}/resume`, token))}>Resume</button>}
-                {(task.status === "queued" || task.status === "paused" ||
-                  (task.status === "running" && task.engine === "yt-dlp")) &&
+                {(task.status === "queued" || task.status === "paused" || task.status === "running") &&
                   <button className="button secondary" disabled={busy}
                     onClick={() => void operation(() => post(`/downloads/${task.id}/cancel`, token))}>Cancel</button>}
                 {(task.status === "failed" || task.status === "interrupted") &&
@@ -220,6 +219,12 @@ export default function App() {
             {selectedTorrent.details.trackers.length ? selectedTorrent.details.trackers.map(s => <div key={s}>{s}</div>) : <p>No trackers; torrent may use DHT.</p>}
           </div>
           <p>Files reported: {selectedTorrent.details.stats.file_progress.length}. Detailed names and file selection will be added in the next BitTorrent milestone.</p>
+          {selectedTorrent.details.stats.finished &&
+            <button className="button secondary" disabled={busy}
+              onClick={() => void operation(async () => {
+                await post(`/downloads/${selectedTorrent.taskId}/stop-seeding`, token);
+                setSelectedTorrent(null);
+              })}>Stop seeding (keep files)</button>}
         </section>}
         <section className="panel">
           <div className="panel-head"><div><h2>yt-dlp versions</h2><p>Managed executable, fallback and update policy.</p></div>

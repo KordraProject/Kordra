@@ -25,7 +25,8 @@ The first implementation relies on native yt-dlp partial-file resume and librqbi
 
 - `queued` or `paused` without a live torrent handle: atomically transition to `cancelled`. Its worker cannot start later.
 - Active `yt-dlp`: transition `running → cancelling`, signal the managed worker, kill/reap the direct child process and finalize `cancelled`. Competing completion/error transitions are resolved so tasks cannot remain in `cancelling`.
-- Active/paused live `librqbit`: **currently rejected** rather than risk releasing an active torrent without proper peer/session removal. Does not remove on-disk downloads.
+- Active/paused live `librqbit`: forget from the session through `Session::delete(..., false)`, preserving files; initial magnet resolution may still block cancellation until a managed handle is available.
+- Completed/seeding torrents can stop seeding without changing their completed status via the separate stop-seeding endpoint.
 - Successful cancellation is not recorded as a failed download. `cancelled` is terminal; re-adding the source creates a new task.
 
 Startup scans **all** queued tasks in creation order instead of silently ignoring any beyond the 500 most recently shown in the Web UI. The initial scheduler still spawns a waiting future per queued task; bounded-memory, priority-aware scheduling remains planned. Cancelling a yt-dlp subprocess currently stops only the direct child, not its complete process tree. Full Windows Job Object and Unix process-group management is still required.

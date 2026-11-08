@@ -43,6 +43,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/downloads/{id}/resume", post(resume_download))
         .route("/downloads/{id}/retry", post(retry_download))
         .route("/downloads/{id}/cancel", post(cancel_download))
+        .route("/downloads/{id}/stop-seeding", post(stop_seeding))
         .route("/engines/capabilities", get(capabilities))
         .route("/engines/lifecycle", get(engine_lifecycle).put(set_engine_lifecycle))
         .route("/engines/{id}/prepare", post(prepare_engine))
@@ -119,6 +120,11 @@ async fn pause_download(Path(id): Path<String>, State(state): State<ApiState>) -
 }
 async fn resume_download(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<Download>> {
     state.worker.resume(&id).await.map(Json).map_err(invalid)
+}
+async fn stop_seeding(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<Download>> {
+    state.worker.stop_seeding(&id).await.map(Json).map_err(|error| {
+        (StatusCode::CONFLICT, Json(ErrorBody { error: error.to_string() }))
+    })
 }
 async fn cancel_download(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<Download>> {
     state.worker.cancel(&id).await.map(Json).map_err(|error| {
