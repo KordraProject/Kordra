@@ -175,13 +175,18 @@ export default function App() {
                 <span>{(Math.min(100, 100 * task.downloaded_bytes / task.total_bytes)).toFixed(1)}%</span>
                 <div className="task-bar"><div style={{width: `${Math.min(100, 100 * task.downloaded_bytes / task.total_bytes)}%`}} /></div>
               </div> : "—"}</td>
-              <td>{prettyBytes(task.downloaded_bytes)} / {prettyBytes(task.uploaded_bytes)}</td>
+              <td>{prettyBytes(task.downloaded_bytes)} / {prettyBytes(task.uploaded_bytes)}
+                <small className="task-attempts">Attempts: {task.attempts}</small>
+              </td>
               <td>{(task.status === "queued" || (task.status === "running" && task.engine === "librqbit")) &&
                 <button className="button secondary" disabled={busy}
                   onClick={() => void operation(() => post(`/downloads/${task.id}/pause`, token))}>Pause</button>}
                 {task.status === "paused" &&
                 <button className="button secondary" disabled={busy}
                   onClick={() => void operation(() => post(`/downloads/${task.id}/resume`, token))}>Resume</button>}
+                {(task.status === "failed" || task.status === "interrupted") &&
+                  <button className="button secondary" disabled={busy}
+                    onClick={() => void operation(() => post(`/downloads/${task.id}/retry`, token))}>Retry</button>}
                 {task.engine === "librqbit" && task.status !== "queued" &&
                   <button className="button secondary" disabled={busy}
                     onClick={() => void operation(async () => {

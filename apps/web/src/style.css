@@ -142,3 +142,5 @@ footer { color: var(--muted); font-size: 12px; padding: 12px 0 26px; }
 .engine-runtime-item { display:flex; justify-content:space-between; align-items:center; padding:10px 12px; border:1px solid var(--border); border-radius:10px; gap:12px }
 .engine-runtime-item strong,.engine-runtime-item span { display:block; font-size:13px }
 .engine-runtime-item span { color:var(--muted); margin-top:4px; font-size:12px }
+
+.task-attempts { display:block; color: var(--muted); margin-top:5px; font-size:11px; }

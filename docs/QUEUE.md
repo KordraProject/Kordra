@@ -12,3 +12,9 @@ The single Kordra queue includes yt-dlp and librqbit. A task starts as `queued`,
 - A paused queued task, or one whose process was restarted, is requeued.
 
 **Known limitations:** pause keeps the semaphore permit allocated for an active torrent; fully featured scheduler/fairness, cancellation, seeding across daemon restart and process-tree control are next. Completed torrents may continue seeding in the current process. This is not yet a production torrent manager.
+
+## Recovery and retries
+
+Daemon startup marks previously running jobs `interrupted` (not silently retried). The user can explicitly restart them, or retry failed jobs, using `POST /api/v1/downloads/{id}/retry`, `kordra-cli retry <id>`, or the unified queue's Retry button. Only one concurrent retry is accepted for the same task. The persistent `attempts` counter increases only when a job actually transitions from queued to running, not merely when a retry is requested. Download paths and task ID stay unchanged.
+
+The first implementation relies on native yt-dlp partial-file resume and librqbit's existing on-disk data during torrent recheck. Cross-restart torrent metadata and seeding restoration are **not implemented**; additional persistence/recheck work remains required. Retrying can fail for sources no longer available.

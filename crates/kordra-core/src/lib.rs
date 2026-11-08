@@ -18,6 +18,7 @@ pub struct Download {
     pub downloaded_bytes: i64,
     pub uploaded_bytes: i64,
     pub total_bytes: i64,
+    pub attempts: i64,
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -69,6 +70,11 @@ impl Database {
             sqlx::query("ALTER TABLE downloads ADD COLUMN total_bytes INTEGER NOT NULL DEFAULT 0")
                 .execute(&pool).await?;
         }
+        if sqlx::query("SELECT name FROM pragma_table_info('downloads') WHERE name = 'attempts'")
+            .fetch_optional(&pool).await?.is_none() {
+            sqlx::query("ALTER TABLE downloads ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
+                .execute(&pool).await?;
+        }
         sqlx::query(r#"CREATE TABLE IF NOT EXISTS transfer_totals (
             id INTEGER PRIMARY KEY CHECK(id = 1),
             total_downloaded_bytes INTEGER NOT NULL DEFAULT 0,
@@ -112,7 +118,7 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         let task = Download { id: Uuid::new_v4().to_string(), source: req.source,
             engine: req.engine, status: "queued".into(), downloaded_bytes: 0,
-            uploaded_bytes: 0, total_bytes: 0, error: None, created_at: now.clone(), updated_at: now };
+            uploaded_bytes: 0, total_bytes: 0, attempts: 0, error: None, created_at: now.clone(), updated_at: now };
         sqlx::query("INSERT INTO downloads(id, source, engine, status, downloaded_bytes, uploaded_bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&task.id).bind(&task.source).bind(&task.engine).bind(&task.status)
             .bind(task.downloaded_bytes).bind(task.uploaded_bytes).bind(&task.created_at)
@@ -127,8 +133,16 @@ impl Database {
             .execute(&self.pool).await?;
         Ok(result.rows_affected() == 1)
     }
+    /// Atomically requeue an interrupted or failed task. Duplicate API retries cannot schedule
+    /// the same task twice because only one caller wins the state transition.
+    pub async fn requeue_failed(&self, id: &str) -> Result<Option<Download>> {
+        let updated = sqlx::query("UPDATE downloads SET status = 'queued', error = NULL, updated_at = ? WHERE id = ? AND status IN ('failed', 'interrupted')")
+            .bind(Utc::now().to_rfc3339()).bind(id).execute(&self.pool).await?;
+        if updated.rows_affected() == 0 { return Ok(None); }
+        self.get(id).await
+    }
     pub async fn set_running(&self, id: &str) -> Result<bool> {
-        let result = sqlx::query("UPDATE downloads SET status = 'running', error = NULL, updated_at = ? WHERE id = ? AND status = 'queued'")
+        let result = sqlx::query("UPDATE downloads SET status = 'running', attempts = attempts + 1, error = NULL, updated_at = ? WHERE id = ? AND status = 'queued'")
             .bind(Utc::now().to_rfc3339()).bind(id).execute(&self.pool).await?;
         Ok(result.rows_affected() == 1)
     }
@@ -221,11 +235,41 @@ mod tests {
         assert_eq!(s.total_downloaded_bytes, 100);
         assert_eq!(s.total_uploaded_bytes, 250);
         assert_eq!(s.completed_tasks, 1);
+        assert_eq!(db.get(&task.id).await.unwrap().unwrap().attempts, 1);
         assert_eq!(s.total_tasks, 1);
         assert_eq!(db.daily_stats().await.unwrap()[0].downloaded_bytes, 100);
         assert_eq!(db.daily_stats().await.unwrap()[0].uploaded_bytes, 250);
         assert_eq!(db.engine_stats().await.unwrap()[0].completed_tasks, 1);
         drop(db);
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+
+    #[tokio::test]
+    async fn retry_is_atomic_and_attempts_are_persisted() {
+        let dir = std::env::temp_dir().join(format!("kordra-retry-{}", Uuid::new_v4()));
+        let db = Database::open(&dir).await.unwrap();
+        let task = db.create(NewDownload {
+            source: "https://example.org/retry".into(), engine: "yt-dlp".into()
+        }).await.unwrap();
+
+        assert!(db.requeue_failed(&task.id).await.unwrap().is_none());
+        assert!(db.set_running(&task.id).await.unwrap());
+        db.finish(&task.id, false, Some("failed to connect")).await.unwrap();
+        let queued = db.requeue_failed(&task.id).await.unwrap().unwrap();
+        assert_eq!(queued.status, "queued");
+        assert!(queued.error.is_none());
+        assert!(db.requeue_failed(&task.id).await.unwrap().is_none());
+        assert!(db.set_running(&task.id).await.unwrap());
+        assert_eq!(db.get(&task.id).await.unwrap().unwrap().attempts, 2);
+        let s = db.stats().await.unwrap();
+        assert_eq!(s.failed_tasks, 1);
+        drop(db);
+        let reopened = Database::open(&dir).await.unwrap();
+        let persisted = reopened.get(&task.id).await.unwrap().unwrap();
+        assert_eq!(persisted.status, "interrupted");
+        assert_eq!(persisted.attempts, 2);
+        assert!(reopened.requeue_failed(&task.id).await.unwrap().is_some());
+        drop(reopened);
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
 }
