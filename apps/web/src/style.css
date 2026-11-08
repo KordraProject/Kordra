@@ -117,3 +117,7 @@ footer { color: var(--muted); font-size: 12px; padding: 12px 0 26px; }
 .history-col { flex: 1; min-width: 12px; height: 100%; display: flex; flex-direction: column; align-items: stretch; justify-content: end; gap: 6px; }
 .history-bar { width: 100%; min-height: 3px; background: var(--accent); border-radius: 5px 5px 2px 2px; opacity: .85; }
 .history-col span { white-space: nowrap; font-size: 10px; color: var(--muted); text-align: center; }
+
+.task-progress { min-width: 82px; font-size: 12px; }
+.task-bar { height: 5px; width: 100%; background: var(--border); border-radius: 10px; overflow: hidden; margin-top: 5px; }
+.task-bar > div { height: 100%; background: var(--accent); border-radius: 10px; }

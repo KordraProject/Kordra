@@ -8,7 +8,7 @@ Kordra is a Rust-first, self-hostable download-management platform with one univ
 - Rust workspace, SQLite task storage, persistent transfer counters.
 - API and CLI, headless daemon.
 - yt-dlp standalone version manager (checksum checks, channels, pinned/active/fallback versions).
-- Initial yt-dlp task worker (other engines are planned, not implemented).
+- Initial yt-dlp task worker and embedded librqbit BitTorrent engine (advanced controls remain planned).
 - Prometheus-compatible `/metrics` and API statistics.
 - Plugin SDK **contract only**, not a third-party plugin loader.
 - GitHub-hosted CI; no personal server is used for development or builds.

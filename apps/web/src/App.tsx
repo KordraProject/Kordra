@@ -23,6 +23,7 @@ export default function App() {
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("");
+  const [sourceEngine, setSourceEngine] = useState<"yt-dlp" | "librqbit">("yt-dlp");
   const [version, setVersion] = useState("");
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
@@ -77,7 +78,7 @@ export default function App() {
     event.preventDefault();
     if (!source.trim()) return;
     await operation(async () => {
-      await post("/downloads", token, { source: source.trim(), engine: "yt-dlp" });
+      await post("/downloads", token, { source: source.trim(), engine: sourceEngine });
       setSource("");
     });
   }
@@ -130,9 +131,13 @@ export default function App() {
         </section>
         <section className="panel">
           <form onSubmit={addTask} className="add-form">
-            <div className="form-copy"><h2>New download</h2><p>Paste a media URL. yt-dlp is currently the only executable engine.</p></div>
+            <div className="form-copy"><h2>New download</h2><p>One queue for media and BitTorrent. Select the appropriate engine.</p></div>
             <div className="input-row">
-              <input aria-label="Media URL" type="url" required placeholder="https://..." value={source}
+              <select aria-label="Download engine" value={sourceEngine} onChange={event => setSourceEngine(event.target.value as "yt-dlp" | "librqbit")}>
+                <option value="yt-dlp">yt-dlp</option>
+                <option value="librqbit">BitTorrent · librqbit</option>
+              </select>
+              <input aria-label="Download URL or magnet link" type="text" required placeholder={sourceEngine === "librqbit" ? "magnet:?xt=... or https://example.org/file.torrent" : "https://..."} value={source}
                 onChange={event => setSource(event.target.value)} />
               <button className="button primary" type="submit" disabled={busy}>Add download</button>
             </div>
@@ -149,12 +154,16 @@ export default function App() {
               onChange={event => setSearch(event.target.value)} />
           </div>
           <div className="table-wrap"><table><thead><tr>
-            <th>Source</th><th>Engine</th><th>State</th><th>Received</th><th>Created</th>
+            <th>Source</th><th>Engine</th><th>State</th><th>Progress</th><th>Received / Upload</th>
           </tr></thead><tbody>
             {visible.map(task => <tr key={task.id}>
               <td><span className="source-cell" title={task.source}>{task.source}</span>{task.error && <small className="error-text">{task.error}</small>}</td>
               <td>{task.engine}</td><td><span className={`status ${task.status}`}>{task.status}</span></td>
-              <td>{prettyBytes(task.downloaded_bytes)}</td><td>{new Date(task.created_at).toLocaleString()}</td>
+              <td>{task.total_bytes > 0 ? <div className="task-progress">
+                <span>{(Math.min(100, 100 * task.downloaded_bytes / task.total_bytes)).toFixed(1)}%</span>
+                <div className="task-bar"><div style={{width: `${Math.min(100, 100 * task.downloaded_bytes / task.total_bytes)}%`}} /></div>
+              </div> : "—"}</td>
+              <td>{prettyBytes(task.downloaded_bytes)} / {prettyBytes(task.uploaded_bytes)}</td>
             </tr>)}
             {!visible.length && <tr><td colSpan={5} className="empty">No matching downloads yet.</td></tr>}
           </tbody></table></div>

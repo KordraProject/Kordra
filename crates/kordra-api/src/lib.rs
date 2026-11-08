@@ -37,6 +37,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/health", get(health))
         .route("/downloads", get(list_downloads).post(new_download))
         .route("/downloads/{id}", get(get_download))
+        .route("/engines/capabilities", get(capabilities))
         .route("/stats", get(stats))
         .route("/stats/daily", get(daily_stats))
         .route("/stats/engines", get(engine_stats))
@@ -82,12 +83,20 @@ async fn get_download(Path(id): Path<String>, State(state): State<ApiState>) -> 
         .map(Json).ok_or_else(|| (StatusCode::NOT_FOUND, Json(ErrorBody { error: "task not found".into() })))
 }
 async fn new_download(State(state): State<ApiState>, Json(req): Json<NewDownload>) -> ApiResult<(StatusCode, Json<Download>)> {
-    if req.engine != "yt-dlp" {
+    if req.engine != "yt-dlp" && req.engine != "librqbit" {
         return Err((StatusCode::NOT_IMPLEMENTED, Json(ErrorBody { error: "engine adapter not implemented yet".into() })));
     }
     let task = state.db.create(req).await.map_err(invalid)?;
     state.worker.enqueue(task.clone());
     Ok((StatusCode::CREATED, Json(task)))
+}
+async fn capabilities() -> Json<serde_json::Value> {
+    Json(serde_json::json!({
+        "engines": [
+            {"id":"yt-dlp","name":"yt-dlp","installed":"on_demand","sources":["http","https"],"capabilities":["download","versions"]},
+            {"id":"librqbit","name":"librqbit","installed":"embedded","sources":["magnet","http","https"],"capabilities":["download","seed","transfer_stats"]}
+        ]
+    }))
 }
 async fn stats(State(state): State<ApiState>) -> ApiResult<Json<Statistics>> {
     state.db.stats().await.map(Json).map_err(internal)

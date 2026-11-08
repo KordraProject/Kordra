@@ -9,7 +9,8 @@
 - [x] Plugin SDK manifest schema (loader/sandbox not yet implemented).
 - [ ] Verify Web build and Docker CI on GitHub; fix failures.
 - [ ] General engine catalog: Deno/FFmpeg, aria2c, gallery-dl, rclone.
-- [ ] librqbit (default) and libtorrent helper.
+- [x] Basic embedded librqbit downloads, upload accounting and unified queue (GitHub CI verification pending).
+- [ ] Full librqbit management, persistence and file/tracker controls; libtorrent helper.
 - [ ] Queue scheduling, pause/retry/resume, cancellation and full process-tree isolation.
 - [ ] WebSocket events and detailed transfer histories.
 - [ ] UI drag/drop editable layouts, advanced themes and i18n.
