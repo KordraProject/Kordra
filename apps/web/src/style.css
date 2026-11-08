@@ -144,3 +144,14 @@ footer { color: var(--muted); font-size: 12px; padding: 12px 0 26px; }
 .engine-runtime-item span { color:var(--muted); margin-top:4px; font-size:12px }
 
 .task-attempts { display:block; color: var(--muted); margin-top:5px; font-size:11px; }
+
+.torrent-files { max-height: 260px; overflow: auto; border: 1px solid var(--border); border-radius: 9px; }
+.torrent-file { padding: 10px 12px; display: flex; align-items: center; gap: 10px; border-bottom: 1px solid var(--border); font-size: 12px; }
+.torrent-file:last-child { border-bottom: none; }
+.torrent-file input { flex-shrink: 0; accent-color: var(--accent); }
+.torrent-file-name { min-width: 0; overflow: hidden; text-overflow: ellipsis; flex: 1; }
+.torrent-file-size { color: var(--muted); white-space: nowrap; }
+@media (max-width: 650px) {
+  .torrent-file { flex-wrap: wrap; }
+  .torrent-file-size { width: 100%; margin-left: 26px; }
+}

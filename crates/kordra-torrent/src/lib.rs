@@ -2,7 +2,7 @@
 use anyhow::{bail, Context, Result};
 use librqbit::{api::TorrentIdOrHash, AddTorrent, AddTorrentResponse, ManagedTorrent, Session};
 use serde_json::{json, Value};
-use std::{collections::HashMap, path::PathBuf, sync::Arc};
+use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 
 #[derive(Clone)]
@@ -75,12 +75,39 @@ impl TorrentEngine {
         let handle = self.active.read().await.get(task_id).cloned()?;
         let stats = handle.stats();
         let trackers: Vec<String> = handle.shared().trackers.iter().map(ToString::to_string).collect();
+        let selected = handle.only_files();
+        let files = handle.with_metadata(|meta| {
+            meta.info.iter_file_details().enumerate().map(|(index, file)| {
+                json!({
+                    "index": index,
+                    "name": file.filename.to_string(),
+                    "length": file.len,
+                    "included": selected.as_ref().is_none_or(|items| items.contains(&index)),
+                    "downloaded_bytes": stats.file_progress.get(index).copied().unwrap_or(0)
+                })
+            }).collect::<Vec<Value>>()
+        }).ok()?;
         Some(json!({
             "id": handle.id(), "name": handle.name(),
             "info_hash": handle.info_hash().as_string(), "paused": handle.is_paused(),
             "output_folder": handle.output_folder().to_string_lossy(),
-            "only_files": handle.only_files(), "trackers": trackers, "stats": stats
+            "only_files": selected, "trackers": trackers, "files": files, "stats": stats
         }))
+    }
+    /// Update the file inclusion set for an existing live torrent.
+    pub async fn select_files(&self, task_id: &str, indices: &[usize]) -> Result<()> {
+        if indices.is_empty() || indices.len() > 10_000 {
+            bail!("select at least one file, at most 10000");
+        }
+        let handle = self.active.read().await.get(task_id).cloned()
+            .context("torrent is not active in this session")?;
+        let total = handle.with_metadata(|meta| meta.info.iter_file_details().count())?;
+        if indices.iter().any(|&idx| idx >= total) {
+            bail!("file index is outside torrent metadata");
+        }
+        let included = indices.iter().copied().collect::<HashSet<usize>>();
+        self.session().await?.update_only_files(&handle, &included).await
+            .context("updating torrent file selection")
     }
     /// Stop managing a torrent without touching files. Must serialize with add/stop.
     pub async fn forget_task(&self, task_id: &str) -> Result<()> {

@@ -40,6 +40,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/downloads/{id}", get(get_download))
         .route("/downloads/{id}/pause", post(pause_download))
         .route("/downloads/{id}/torrent", get(torrent_details))
+        .route("/downloads/{id}/torrent/files", post(select_torrent_files))
         .route("/downloads/{id}/resume", post(resume_download))
         .route("/downloads/{id}/retry", post(retry_download))
         .route("/downloads/{id}/cancel", post(cancel_download))
@@ -109,6 +110,11 @@ async fn list_downloads(State(state): State<ApiState>) -> ApiResult<Json<Vec<Dow
 async fn get_download(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<Download>> {
     state.db.get(&id).await.map_err(internal)?
         .map(Json).ok_or_else(|| (StatusCode::NOT_FOUND, Json(ErrorBody { error: "task not found".into() })))
+}
+#[derive(Deserialize)]
+struct TorrentFileSelection { only_files: Vec<usize> }
+async fn select_torrent_files(Path(id): Path<String>, State(state): State<ApiState>, Json(req): Json<TorrentFileSelection>) -> ApiResult<Json<serde_json::Value>> {
+    state.worker.select_torrent_files(&id, &req.only_files).await.map(Json).map_err(invalid)
 }
 async fn torrent_details(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<serde_json::Value>> {
     state.worker.torrent_details(&id).await.map(Json).map_err(|_| {
