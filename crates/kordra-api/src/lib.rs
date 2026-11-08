@@ -60,8 +60,21 @@ pub fn router(state: ApiState) -> Router {
         .route("/runtimes/deno/rollback", post(rollback_deno))
         .route("/runtimes/deno/policy", post(deno_policy))
         .route_layer(middleware::from_fn_with_state(state.clone(), api_auth));
+    let cors = tower_http::cors::CorsLayer::new()
+        .allow_origin([
+            axum::http::HeaderValue::from_static("tauri://localhost"),
+            axum::http::HeaderValue::from_static("http://tauri.localhost"),
+        ])
+        .allow_methods([
+            axum::http::Method::GET,
+            axum::http::Method::POST,
+            axum::http::Method::PUT,
+            axum::http::Method::OPTIONS,
+        ])
+        .allow_headers([axum::http::header::AUTHORIZATION, axum::http::header::CONTENT_TYPE]);
     let app = Router::new().nest("/api/v1", api)
         .route("/metrics", get(metrics_endpoint))
+        .layer(cors)
         .with_state(state);
     let enabled = std::env::var("KORDRA_WEB_ENABLED")
         .map(|v| v != "false" && v != "0").unwrap_or(true);

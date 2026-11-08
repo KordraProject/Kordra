@@ -2,7 +2,8 @@ export async function api<T>(path: string, token: string, options?: RequestInit)
   const headers = new Headers(options?.headers);
   if (token) headers.set("Authorization", `Bearer ${token}`);
   if (options?.body) headers.set("Content-Type", "application/json");
-  const response = await fetch(`/api/v1${path}`, { ...options, headers });
+  const base = import.meta.env.VITE_KORDRA_API_BASE ?? "";
+  const response = await fetch(`${base}/api/v1${path}`, { ...options, headers });
   if (!response.ok) {
     const detail = await response.text();
     throw new Error(`HTTP ${response.status}: ${detail.slice(0, 400)}`);
