@@ -19,4 +19,4 @@ The Web UI is built using React, TypeScript and Vite and served by the headless 
 
 Planned: Tauri 2 desktop, Telegram bot and Mini App, WebSocket API, extra engines, plugin sandbox, automatic HTTPS and agent-controlled remote devices. Kordra-Agent lives in a separate repository and initially binds to loopback only.
 
-All CI, package builds and tests run **exclusively** on GitHub-hosted GitHub Actions. Personal machines and servers are not development, build or testing hosts.
+Engine activation: global hot/cold policy plus temporary/persistent cold retention, with a real live BitTorrent session and managed CLI tool readiness. See [lifecycle](ENGINE_LIFECYCLE.md).\n\nAll CI, package builds and tests run **exclusively** on GitHub-hosted GitHub Actions. Personal machines and servers are not development, build or testing hosts.

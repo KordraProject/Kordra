@@ -2,7 +2,7 @@ use anyhow::{bail, Result};
 use kordra_api::{router, ApiState};
 use kordra_core::Database;
 use kordra_engine_manager::{DenoManager, YtDlpManager};
-use kordra_worker::Worker;
+use kordra_worker::{PolicyStore, Worker};
 use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 use tokio::net::TcpListener;
 
@@ -22,8 +22,10 @@ async fn main() -> Result<()> {
     let downloads = PathBuf::from(env::var("KORDRA_DOWNLOAD_DIR").unwrap_or_else(|_| "./downloads".to_owned()));
     let db = Database::open(&data).await?;
     let manager = YtDlpManager::new(data.clone())?;
-    let deno = DenoManager::new(data)?;
-    let worker = Worker::new(db.clone(), manager.clone(), deno.clone(), downloads, 2);
+    let deno = DenoManager::new(data.clone())?;
+    let lifecycle = PolicyStore::open(data).await?;
+    let worker = Worker::new(db.clone(), manager.clone(), deno.clone(), downloads, lifecycle, 2);
+    worker.apply_startup_policy().await?;
     worker.enqueue_pending().await?;
     let updater = manager.clone();
     tokio::spawn(async move {

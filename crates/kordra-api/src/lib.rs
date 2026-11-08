@@ -9,7 +9,7 @@ use axum::{
 };
 use kordra_core::{DailyTransfer, Database, Download, EngineTransfer, NewDownload, Statistics};
 use kordra_engine_manager::{Channel, DenoManager, DenoState, VersionState, YtDlpManager};
-use kordra_worker::Worker;
+use kordra_worker::{EngineLifecyclePolicy, Worker};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
@@ -42,6 +42,8 @@ pub fn router(state: ApiState) -> Router {
         .route("/downloads/{id}/torrent", get(torrent_details))
         .route("/downloads/{id}/resume", post(resume_download))
         .route("/engines/capabilities", get(capabilities))
+        .route("/engines/lifecycle", get(engine_lifecycle).put(set_engine_lifecycle))
+        .route("/engines/{id}/prepare", post(prepare_engine))
         .route("/stats", get(stats))
         .route("/stats/daily", get(daily_stats))
         .route("/stats/engines", get(engine_stats))
@@ -110,6 +112,16 @@ async fn new_download(State(state): State<ApiState>, Json(req): Json<NewDownload
     let task = state.db.create(req).await.map_err(invalid)?;
     state.worker.enqueue(task.clone());
     Ok((StatusCode::CREATED, Json(task)))
+}
+async fn engine_lifecycle(State(state): State<ApiState>) -> ApiResult<Json<serde_json::Value>> {
+    state.worker.lifecycle_status().await.map(Json).map_err(internal)
+}
+async fn set_engine_lifecycle(State(state): State<ApiState>, Json(policy): Json<EngineLifecyclePolicy>) -> ApiResult<Json<serde_json::Value>> {
+    state.worker.set_lifecycle_policy(policy).await.map_err(invalid)?;
+    state.worker.lifecycle_status().await.map(Json).map_err(internal)
+}
+async fn prepare_engine(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<serde_json::Value>> {
+    state.worker.prepare_engine(&id).await.map(Json).map_err(invalid)
 }
 async fn capabilities() -> Json<serde_json::Value> {
     Json(serde_json::json!({

@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, post, prettyBytes } from "./api";
-import type { Channel, DailyTransfer, Download, EngineState, Stats, TorrentDetails, DenoState } from "./types";
+import type { Channel, DailyTransfer, Download, EngineState, Stats, TorrentDetails, DenoState, EngineLifecycleStatus, StartupMode, ColdRetention } from "./types";
 
 const emptyStats: Stats = {
   total_downloaded_bytes: 0, total_uploaded_bytes: 0,
@@ -21,6 +21,7 @@ export default function App() {
   const [daily, setDaily] = useState<DailyTransfer[]>([]);
   const [engine, setEngine] = useState<EngineState | null>(null);
   const [deno, setDeno] = useState<DenoState | null>(null);
+  const [lifecycle, setLifecycle] = useState<EngineLifecycleStatus | null>(null);
   const [denoVersion, setDenoVersion] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
@@ -40,17 +41,19 @@ export default function App() {
     localStorage.setItem(accentKey, accent);
   }, [theme, accent]);
   const refresh = useCallback(async () => {
-    const [downloadList, summary, state, days, denoState] = await Promise.all([
+    const [downloadList, summary, state, days, denoState, lifecycleStatus] = await Promise.all([
       api<Download[]>("/downloads", token), api<Stats>("/stats", token),
       api<EngineState>("/engines/yt-dlp", token),
       api<DailyTransfer[]>("/stats/daily", token),
-      api<DenoState>("/runtimes/deno", token)
+      api<DenoState>("/runtimes/deno", token),
+      api<EngineLifecycleStatus>("/engines/lifecycle", token)
     ]);
     setTasks(downloadList);
     setStats(summary);
     setDaily(days);
     setEngine(state);
     setDeno(denoState);
+    setLifecycle(lifecycleStatus);
     setLastUpdated(new Date().toLocaleTimeString());
     setError("");
   }, [token]);
@@ -277,6 +280,51 @@ export default function App() {
             </div>
           </div>
           <div className="version-note">Fallback: {deno?.fallback ?? "—"} · Installed: {deno?.installed.join(", ") || "none"}</div>
+        </section>
+        <section className="panel">
+          <div className="panel-head"><div><h2>Engine runtime</h2>
+            <p>Choose startup behavior and how long activated engines remain available.</p></div>
+          </div>
+          <div className="version-grid">
+            <label>Startup mode
+              <select disabled={!lifecycle || busy} value={lifecycle?.policy.startup ?? "cold"}
+                onChange={event => void operation(async () => {
+                  await api<EngineLifecycleStatus>("/engines/lifecycle", token,
+                    { method: "PUT", body: JSON.stringify({
+                      startup: event.target.value as StartupMode,
+                      cold_retention: lifecycle?.policy.cold_retention ?? "persistent"
+                    }), headers: {"Content-Type":"application/json"} });
+                })}>
+                <option value="hot">Hot · initialize installed engines at startup</option>
+                <option value="cold">Cold · initialize when first used</option>
+              </select>
+            </label>
+            <label>Cold engine retention
+              <select disabled={!lifecycle || busy || lifecycle.policy.startup === "hot"}
+                value={lifecycle?.policy.cold_retention ?? "persistent"}
+                onChange={event => void operation(async () => {
+                  await api<EngineLifecycleStatus>("/engines/lifecycle", token,
+                    { method: "PUT", body: JSON.stringify({
+                      startup: lifecycle?.policy.startup ?? "cold",
+                      cold_retention: event.target.value as ColdRetention
+                    }), headers: {"Content-Type":"application/json"} });
+                })}>
+                <option value="temporary">Temporary · release after last task</option>
+                <option value="persistent">Persistent · keep activated engine ready</option>
+              </select>
+            </label>
+          </div>
+          <div className="version-note">
+            Temporary torrent sessions stop seeding when the last active torrent completes.
+            yt-dlp is a short-lived CLI process, so persistent mode prepares its adapter without keeping an idle yt-dlp process.
+          </div>
+          <div className="engine-runtime-list">
+            {lifecycle?.engines.map(engine => <div key={engine.id} className="engine-runtime-item">
+              <div><strong>{engine.id}</strong><span>{engine.kind.replaceAll("_", " ")} · {engine.ready ? "Ready" : "Not initialized"}</span></div>
+              <button className="button secondary" disabled={busy || engine.ready}
+                onClick={() => void operation(() => post(`/engines/${engine.id}/prepare`, token))}>Prepare</button>
+            </div>)}
+          </div>
         </section>
         {settingsOpen && <section className="panel settings-panel">
           <div className="panel-head"><h2>Appearance & connection</h2>

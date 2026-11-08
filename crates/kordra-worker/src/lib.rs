@@ -1,5 +1,7 @@
 //! First real task executor: yt-dlp as a managed child process (no shell).
 //! Full job cancellation, process-tree supervision and media selection follow later.
+mod lifecycle;
+pub use lifecycle::{ColdRetention, EngineLifecyclePolicy, PolicyStore, StartupMode};
 use anyhow::{bail, Context, Result};
 use kordra_core::{Database, Download};
 use kordra_engine_manager::{DenoManager, YtDlpManager};
@@ -14,11 +16,58 @@ pub struct Worker {
     deno: DenoManager,
     torrents: TorrentEngine,
     downloads: PathBuf,
+    lifecycle: PolicyStore,
     limit: Arc<Semaphore>,
 }
 impl Worker {
-    pub fn new(db: Database, manager: YtDlpManager, deno: DenoManager, downloads: PathBuf, concurrency: usize) -> Self {
-        Self { db, manager, deno, torrents: TorrentEngine::new(downloads.clone()), downloads, limit: Arc::new(Semaphore::new(concurrency.max(1))) }
+    pub fn new(db: Database, manager: YtDlpManager, deno: DenoManager, downloads: PathBuf, lifecycle: PolicyStore, concurrency: usize) -> Self {
+        Self { db, manager, deno, torrents: TorrentEngine::new(downloads.clone()), downloads,
+            lifecycle, limit: Arc::new(Semaphore::new(concurrency.max(1))) }
+    }
+    pub async fn lifecycle_policy(&self) -> EngineLifecyclePolicy { self.lifecycle.get().await }
+    pub async fn lifecycle_status(&self) -> Result<serde_json::Value> {
+        let torrent_ready = self.torrents.is_ready().await;
+        let ytdlp = self.manager.state().await?;
+        let deno = self.deno.state().await?;
+        Ok(serde_json::json!({
+            "policy": self.lifecycle.get().await,
+            "engines": [
+                {"id":"librqbit","kind":"embedded_service","ready":torrent_ready,
+                    "active_tasks":self.torrents.active_count().await},
+                {"id":"yt-dlp","kind":"short_lived_cli","ready":ytdlp.active.is_some(),
+                    "active_version":ytdlp.active,"persistent_process_supported":false},
+                {"id":"deno","kind":"runtime_dependency","ready":deno.active.is_some(),
+                    "active_version":deno.active,"persistent_process_supported":false}
+            ]
+        }))
+    }
+    pub async fn apply_startup_policy(&self) -> Result<()> {
+        if self.lifecycle.get().await.startup == StartupMode::Hot {
+            self.torrents.warm().await?;
+            // A hot start only warms already installed tools. It never downloads
+            // missing executables or leaves invalid idle yt-dlp subprocesses.
+            let _ = self.manager.active_path().await?;
+            let _ = self.deno.active_path().await?;
+        }
+        Ok(())
+    }
+    pub async fn set_lifecycle_policy(&self, policy: EngineLifecyclePolicy) -> Result<EngineLifecyclePolicy> {
+        self.lifecycle.update(policy).await?;
+        if policy.startup == StartupMode::Hot {
+            self.apply_startup_policy().await?;
+        } else if !policy.retain_after_use() {
+            self.torrents.cool_if_idle().await;
+        }
+        Ok(policy)
+    }
+    pub async fn prepare_engine(&self, name: &str) -> Result<serde_json::Value> {
+        match name {
+            "librqbit" => self.torrents.warm().await?,
+            "yt-dlp" => { let _ = self.manager.ensure_active().await?; },
+            "deno" => { let _ = self.deno.ensure_active().await?; },
+            _ => bail!("unsupported engine or runtime: {name}"),
+        }
+        self.lifecycle_status().await
     }
     pub fn enqueue(&self, item: Download) {
         let this = self.clone();
@@ -108,7 +157,13 @@ impl Worker {
                 }
             }
         }
-        // The rqbit session continues seeding until Kordra exits. Upload counters remain visible.
+        if !self.lifecycle.get().await.retain_after_use() {
+            // Temporary cold mode stops seeding and releases the session once the
+            // last active torrent finishes. Persistent/hot mode continues seeding.
+            self.torrents.finish_temporary(&task.id).await?;
+            return Ok(());
+        }
+        // Persistent and hot modes allow completed torrents to seed until exit.
         let db = self.db.clone();
         let id = task.id.clone();
         let seeding_handle = handle.clone();

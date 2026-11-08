@@ -27,6 +27,9 @@ enum Operation {
     InstallDeno { version: String },
     ActivateDeno { version: String },
     RollbackDeno,
+    EngineLifecycle,
+    SetLifecycle { #[arg(long)] startup: String, #[arg(long, default_value = "persistent")] cold_retention: String },
+    PrepareEngine { id: String },
     Pause { id: String },
     Resume { id: String },
 }
@@ -52,11 +55,16 @@ async fn main() -> Result<()> {
         Operation::InstallDeno { version } => (true, format!("/runtimes/deno/install/{version}"), Some(serde_json::json!({"activate":false}))),
         Operation::ActivateDeno { version } => (true, format!("/runtimes/deno/activate/{version}"), None),
         Operation::RollbackDeno => (true, "/runtimes/deno/rollback".into(), None),
+        Operation::EngineLifecycle => (false, "/engines/lifecycle".into(), None),
+        Operation::SetLifecycle { startup, cold_retention } => (true, "/engines/lifecycle".into(),
+            Some(serde_json::json!({"startup":startup,"cold_retention":cold_retention}))),
+        Operation::PrepareEngine { id } => (true, format!("/engines/{id}/prepare"), None),
         Operation::Pause { id } => (true, format!("/downloads/{id}/pause"), None),
         Operation::Resume { id } => (true, format!("/downloads/{id}/resume"), None),
     };
     let client = reqwest::Client::new();
-    let request = if post { client.post(format!("{url}{route}")) } else { client.get(format!("{url}{route}")) };
+    let request = if route == "/engines/lifecycle" && post { client.put(format!("{url}{route}")) }
+        else if post { client.post(format!("{url}{route}")) } else { client.get(format!("{url}{route}")) };
     let request = if let Some(token) = opts.token { request.bearer_auth(token) } else { request };
     let request = if let Some(body) = body { request.json(&body) } else { request };
     let response = request.send().await?;

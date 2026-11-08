@@ -137,3 +137,8 @@ footer { color: var(--muted); font-size: 12px; padding: 12px 0 26px; }
 .history-legend { display: flex; align-items: center; gap: 8px; font-size: 11px; }
 .legend-down, .legend-up { display: inline-block; width: 9px; height: 9px; border-radius: 3px; background: var(--accent); }
 .legend-up { background: #e6a76a; }
+
+.engine-runtime-list { display:grid; gap:8px; margin-top:16px }
+.engine-runtime-item { display:flex; justify-content:space-between; align-items:center; padding:10px 12px; border:1px solid var(--border); border-radius:10px; gap:12px }
+.engine-runtime-item strong,.engine-runtime-item span { display:block; font-size:13px }
+.engine-runtime-item span { color:var(--muted); margin-top:4px; font-size:12px }

@@ -56,3 +56,17 @@ export type DenoState = {
   installed: string[];
   auto_update: boolean;
 };
+
+export type StartupMode = "hot" | "cold";
+export type ColdRetention = "temporary" | "persistent";
+export type EngineLifecycleStatus = {
+  policy: { startup: StartupMode; cold_retention: ColdRetention };
+  engines: Array<{
+    id: string;
+    kind: string;
+    ready: boolean;
+    active_tasks?: number;
+    active_version?: string | null;
+    persistent_process_supported?: boolean;
+  }>;
+};

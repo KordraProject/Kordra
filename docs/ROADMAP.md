@@ -11,7 +11,7 @@
 - [ ] General engine catalog: Deno/FFmpeg, aria2c, gallery-dl, rclone.
 - [x] Basic embedded librqbit downloads, upload accounting and unified queue (GitHub CI verification pending).
 - [ ] Full librqbit management, persistence and file/tracker controls; libtorrent helper.
-- [ ] Queue scheduling, pause/retry/resume, cancellation and full process-tree isolation.
+- [x] Hot/cold startup modes and temporary/persistent cold retention for embedded librqbit, CLI adapter readiness and Web/API/CLI controls.\n- [ ] Full per-engine resource policies, cancellation, resume and process-tree supervision.\n- [ ] Queue scheduling, pause/retry/resume, cancellation and full process-tree isolation.
 - [ ] WebSocket events and detailed transfer histories.
 - [ ] UI drag/drop editable layouts, advanced themes and i18n.
 - [ ] Tauri 2 desktop and installers for Windows/Linux (MSI/EXE/portable, deb/rpm/AppImage).
