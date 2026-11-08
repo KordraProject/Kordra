@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, post, prettyBytes } from "./api";
-import type { Channel, DailyTransfer, Download, EngineState, Stats, TorrentDetails } from "./types";
+import type { Channel, DailyTransfer, Download, EngineState, Stats, TorrentDetails, DenoState } from "./types";
 
 const emptyStats: Stats = {
   total_downloaded_bytes: 0, total_uploaded_bytes: 0,
@@ -20,6 +20,8 @@ export default function App() {
   const [stats, setStats] = useState<Stats>(emptyStats);
   const [daily, setDaily] = useState<DailyTransfer[]>([]);
   const [engine, setEngine] = useState<EngineState | null>(null);
+  const [deno, setDeno] = useState<DenoState | null>(null);
+  const [denoVersion, setDenoVersion] = useState("");
   const [filter, setFilter] = useState<Filter>("all");
   const [search, setSearch] = useState("");
   const [source, setSource] = useState("");
@@ -38,15 +40,17 @@ export default function App() {
     localStorage.setItem(accentKey, accent);
   }, [theme, accent]);
   const refresh = useCallback(async () => {
-    const [downloadList, summary, state, days] = await Promise.all([
+    const [downloadList, summary, state, days, denoState] = await Promise.all([
       api<Download[]>("/downloads", token), api<Stats>("/stats", token),
       api<EngineState>("/engines/yt-dlp", token),
-      api<DailyTransfer[]>("/stats/daily", token)
+      api<DailyTransfer[]>("/stats/daily", token),
+      api<DenoState>("/runtimes/deno", token)
     ]);
     setTasks(downloadList);
     setStats(summary);
     setDaily(days);
     setEngine(state);
+    setDeno(denoState);
     setLastUpdated(new Date().toLocaleTimeString());
     setError("");
   }, [token]);
@@ -239,6 +243,36 @@ export default function App() {
             </div>
           </div>
           <div className="version-note">Fallback: {engine?.fallback ?? "—"} · Installed: {engine?.installed.join(", ") || "none"}</div>
+        </section>
+        <section className="panel">
+          <div className="panel-head"><div><h2>Deno runtime versions</h2>
+            <p>Automatically installed for YouTube downloads, with pinning and fallback.</p></div>
+            <span className="chip">{deno?.active ?? "Not installed"}</span></div>
+          <div className="version-grid">
+            <label>Version policy
+              <select disabled={!deno || busy} value={deno?.pinned ?? "auto"}
+                onChange={event => void operation(() => post("/runtimes/deno/policy", token, {
+                  pinned: event.target.value === "auto" ? null : event.target.value,
+                  auto_update: event.target.value === "auto"
+                }))}>
+                <option value="auto">Automatic</option>
+                {deno?.installed.map(v => <option key={v} value={v}>Pin {v}</option>)}
+              </select>
+            </label>
+            <label>Install release tag
+              <input placeholder="e.g. v2.9.8" value={denoVersion}
+                onChange={event => setDenoVersion(event.target.value)} />
+            </label>
+            <div className="version-actions">
+              <button className="button secondary" disabled={busy || !denoVersion}
+                onClick={() => void operation(() => post(`/runtimes/deno/install/${encodeURIComponent(denoVersion)}`, token, {activate:false}))}>Install version</button>
+              <button className="button secondary" disabled={busy || !deno?.fallback}
+                onClick={() => void operation(() => post("/runtimes/deno/rollback", token))}>Rollback</button>
+              <button className="button primary" disabled={busy}
+                onClick={() => void operation(() => post("/runtimes/deno/update", token, {activate:true}))}>Check updates</button>
+            </div>
+          </div>
+          <div className="version-note">Fallback: {deno?.fallback ?? "—"} · Installed: {deno?.installed.join(", ") || "none"}</div>
         </section>
         {settingsOpen && <section className="panel settings-panel">
           <div className="panel-head"><h2>Appearance & connection</h2>

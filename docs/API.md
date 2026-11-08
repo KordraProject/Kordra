@@ -16,6 +16,12 @@ Default bind: `http://127.0.0.1:8079`. Optional bearer token via `KORDRA_API_TOK
 | GET | /api/v1/stats/daily | Recent daily transfer bytes |
 | GET | /api/v1/stats/engines | Grouped task stats by engine |
 | GET | /api/v1/engines/yt-dlp | Active, fallback, pinned and installed versions |
+| GET | /api/v1/runtimes/deno | Deno runtime state |
+| POST | /api/v1/runtimes/deno/update | Download latest stable Deno, with optional `{"activate":true}` |
+| POST | /api/v1/runtimes/deno/install/{version} | Install a specific stable release tag |
+| POST | /api/v1/runtimes/deno/activate/{version} | Activate already installed version |
+| POST | /api/v1/runtimes/deno/rollback | Restore fallback |
+| POST | /api/v1/runtimes/deno/policy | `{"pinned":null,"auto_update":true}` |
 | POST | /api/v1/engines/yt-dlp/update | `{"channel":"stable","activate":true}` |
 | POST | /api/v1/engines/yt-dlp/install/{version} | `{"channel":"stable","activate":false}` |
 | POST | /api/v1/engines/yt-dlp/activate/{version} | Manually switch installed version |

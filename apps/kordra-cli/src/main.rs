@@ -22,6 +22,11 @@ enum Operation {
     InstallYtdlp { version: String, #[arg(long, default_value = "stable")] channel: String },
     ActivateYtdlp { version: String },
     RollbackYtdlp,
+    DenoState,
+    UpdateDeno,
+    InstallDeno { version: String },
+    ActivateDeno { version: String },
+    RollbackDeno,
     Pause { id: String },
     Resume { id: String },
 }
@@ -42,6 +47,11 @@ async fn main() -> Result<()> {
             Some(serde_json::json!({"channel":channel,"activate":false}))),
         Operation::ActivateYtdlp { version } => (true, format!("/engines/yt-dlp/activate/{version}"), None),
         Operation::RollbackYtdlp => (true, "/engines/yt-dlp/rollback".into(), None),
+        Operation::DenoState => (false, "/runtimes/deno".into(), None),
+        Operation::UpdateDeno => (true, "/runtimes/deno/update".into(), Some(serde_json::json!({"activate":true}))),
+        Operation::InstallDeno { version } => (true, format!("/runtimes/deno/install/{version}"), Some(serde_json::json!({"activate":false}))),
+        Operation::ActivateDeno { version } => (true, format!("/runtimes/deno/activate/{version}"), None),
+        Operation::RollbackDeno => (true, "/runtimes/deno/rollback".into(), None),
         Operation::Pause { id } => (true, format!("/downloads/{id}/pause"), None),
         Operation::Resume { id } => (true, format!("/downloads/{id}/resume"), None),
     };

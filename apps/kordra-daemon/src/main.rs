@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use kordra_api::{router, ApiState};
 use kordra_core::Database;
-use kordra_engine_manager::YtDlpManager;
+use kordra_engine_manager::{DenoManager, YtDlpManager};
 use kordra_worker::Worker;
 use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 use tokio::net::TcpListener;
@@ -21,8 +21,9 @@ async fn main() -> Result<()> {
     let data = PathBuf::from(env::var("KORDRA_DATA_DIR").unwrap_or_else(|_| "./data".to_owned()));
     let downloads = PathBuf::from(env::var("KORDRA_DOWNLOAD_DIR").unwrap_or_else(|_| "./downloads".to_owned()));
     let db = Database::open(&data).await?;
-    let manager = YtDlpManager::new(data)?;
-    let worker = Worker::new(db.clone(), manager.clone(), downloads, 2);
+    let manager = YtDlpManager::new(data.clone())?;
+    let deno = DenoManager::new(data)?;
+    let worker = Worker::new(db.clone(), manager.clone(), deno.clone(), downloads, 2);
     worker.enqueue_pending().await?;
     let updater = manager.clone();
     tokio::spawn(async move {
@@ -39,7 +40,22 @@ async fn main() -> Result<()> {
             tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
         }
     });
-    let state = ApiState { db, manager, worker, token, metrics_token };
+    let deno_updater = deno.clone();
+    tokio::spawn(async move {
+        loop {
+            match deno_updater.state().await {
+                Ok(policy) if policy.auto_update && policy.pinned.is_none() && policy.active.is_some() => {
+                    if let Err(error) = deno_updater.update(true).await {
+                        tracing::warn!("Deno auto-update failed: {error:#}");
+                    }
+                }
+                Ok(_) => {}
+                Err(error) => tracing::warn!("could not read Deno update policy: {error:#}"),
+            }
+            tokio::time::sleep(Duration::from_secs(24 * 60 * 60)).await;
+        }
+    });
+    let state = ApiState { db, manager, deno, worker, token, metrics_token };
     tracing::info!("Kordra listening on {address}");
     let listener = TcpListener::bind(address).await?;
     axum::serve(listener, router(state)).await?;

@@ -48,3 +48,11 @@ export type TorrentDetails = {
     file_progress: number[];
   };
 };
+
+export type DenoState = {
+  active: string | null;
+  fallback: string | null;
+  pinned: string | null;
+  installed: string[];
+  auto_update: boolean;
+};

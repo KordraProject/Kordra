@@ -8,7 +8,7 @@ use axum::{
     Json, Router,
 };
 use kordra_core::{DailyTransfer, Database, Download, EngineTransfer, NewDownload, Statistics};
-use kordra_engine_manager::{Channel, VersionState, YtDlpManager};
+use kordra_engine_manager::{Channel, DenoManager, DenoState, VersionState, YtDlpManager};
 use kordra_worker::Worker;
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
@@ -17,6 +17,7 @@ use subtle::ConstantTimeEq;
 pub struct ApiState {
     pub db: Database,
     pub manager: YtDlpManager,
+    pub deno: DenoManager,
     pub worker: Worker,
     pub token: Option<String>,
     pub metrics_token: Option<String>,
@@ -50,6 +51,12 @@ pub fn router(state: ApiState) -> Router {
         .route("/engines/yt-dlp/activate/{version}", post(activate_engine))
         .route("/engines/yt-dlp/rollback", post(rollback_engine))
         .route("/engines/yt-dlp/policy", post(engine_policy))
+        .route("/runtimes/deno", get(deno_state))
+        .route("/runtimes/deno/update", post(update_deno))
+        .route("/runtimes/deno/install/{version}", post(install_deno))
+        .route("/runtimes/deno/activate/{version}", post(activate_deno))
+        .route("/runtimes/deno/rollback", post(rollback_deno))
+        .route("/runtimes/deno/policy", post(deno_policy))
         .route_layer(middleware::from_fn_with_state(state.clone(), api_auth));
     let app = Router::new().nest("/api/v1", api)
         .route("/metrics", get(metrics_endpoint))
@@ -146,6 +153,28 @@ async fn rollback_engine(State(state): State<ApiState>) -> ApiResult<Json<Versio
 struct Policy { channel: Channel, pinned: Option<String>, auto_update: bool }
 async fn engine_policy(State(state): State<ApiState>, Json(req): Json<Policy>) -> ApiResult<Json<VersionState>> {
     state.manager.set_policy(req.channel, req.pinned, req.auto_update).await.map(Json).map_err(invalid)
+}
+async fn deno_state(State(state): State<ApiState>) -> ApiResult<Json<DenoState>> {
+    state.deno.state().await.map(Json).map_err(internal)
+}
+#[derive(Deserialize)]
+struct RuntimeInstall { activate: Option<bool> }
+async fn update_deno(State(state): State<ApiState>, Json(req): Json<RuntimeInstall>) -> ApiResult<Json<DenoState>> {
+    state.deno.update(req.activate.unwrap_or(true)).await.map(Json).map_err(invalid)
+}
+async fn install_deno(Path(version): Path<String>, State(state): State<ApiState>, Json(req): Json<RuntimeInstall>) -> ApiResult<Json<DenoState>> {
+    state.deno.install_version(&version, req.activate.unwrap_or(false)).await.map(Json).map_err(invalid)
+}
+async fn activate_deno(Path(version): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<DenoState>> {
+    state.deno.activate(&version).await.map(Json).map_err(invalid)
+}
+async fn rollback_deno(State(state): State<ApiState>) -> ApiResult<Json<DenoState>> {
+    state.deno.rollback().await.map(Json).map_err(invalid)
+}
+#[derive(Deserialize)]
+struct DenoPolicy { pinned: Option<String>, auto_update: bool }
+async fn deno_policy(State(state): State<ApiState>, Json(req): Json<DenoPolicy>) -> ApiResult<Json<DenoState>> {
+    state.deno.policy(req.pinned, req.auto_update).await.map(Json).map_err(invalid)
 }
 async fn metrics_endpoint(State(state): State<ApiState>, headers: HeaderMap) -> Response {
     if state.metrics_token.as_ref().or(state.token.as_ref())

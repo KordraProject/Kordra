@@ -2,7 +2,7 @@
 //! Full job cancellation, process-tree supervision and media selection follow later.
 use anyhow::{bail, Context, Result};
 use kordra_core::{Database, Download};
-use kordra_engine_manager::YtDlpManager;
+use kordra_engine_manager::{DenoManager, YtDlpManager};
 use kordra_torrent::TorrentEngine;
 use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command, sync::Semaphore};
@@ -11,13 +11,14 @@ use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command, sync::Semaphore}
 pub struct Worker {
     db: Database,
     manager: YtDlpManager,
+    deno: DenoManager,
     torrents: TorrentEngine,
     downloads: PathBuf,
     limit: Arc<Semaphore>,
 }
 impl Worker {
-    pub fn new(db: Database, manager: YtDlpManager, downloads: PathBuf, concurrency: usize) -> Self {
-        Self { db, manager, torrents: TorrentEngine::new(downloads.clone()), downloads, limit: Arc::new(Semaphore::new(concurrency.max(1))) }
+    pub fn new(db: Database, manager: YtDlpManager, deno: DenoManager, downloads: PathBuf, concurrency: usize) -> Self {
+        Self { db, manager, deno, torrents: TorrentEngine::new(downloads.clone()), downloads, limit: Arc::new(Semaphore::new(concurrency.max(1))) }
     }
     pub fn enqueue(&self, item: Download) {
         let this = self.clone();
@@ -126,7 +127,12 @@ impl Worker {
     async fn run_ytdlp(&self, task: Download) -> Result<()> {
         let binary = self.manager.ensure_active().await?;
         tokio::fs::create_dir_all(&self.downloads).await?;
-        let mut child = Command::new(binary)
+        let mut command = Command::new(binary);
+        if youtube_url(&task.source) {
+            let deno = self.deno.ensure_active().await.context("installing Deno required for YouTube")?;
+            command.arg("--js-runtimes").arg(format!("deno:{}", deno.display()));
+        }
+        let mut child = command
             .arg("--ignore-config")
             .arg("--no-playlist")
             .arg("--newline")
@@ -160,6 +166,13 @@ impl Worker {
         Ok(())
     }
 }
+fn youtube_url(source: &str) -> bool {
+    let Ok(url) = reqwest::Url::parse(source) else { return false; };
+    url.host_str().is_some_and(|host| {
+        host == "youtu.be" || host == "youtube.com" || host.ends_with(".youtube.com")
+            || host == "youtube-nocookie.com" || host.ends_with(".youtube-nocookie.com")
+    })
+}
 fn parse_progress(line: &str) -> Option<u64> {
     let value = line.split("download:").nth(1)?.trim();
     let digits: String = value.chars().take_while(char::is_ascii_digit).collect();
@@ -180,5 +193,9 @@ mod tests {
     fn parses_progress() {
         assert_eq!(parse_progress("[download] download:12345"), Some(12345));
         assert_eq!(parse_progress("download:NA"), None);
+        assert!(youtube_url("https://www.youtube.com/watch?v=123"));
+        assert!(youtube_url("https://youtu.be/test"));
+        assert!(!youtube_url("https://youtube.com.evil.test/watch"));
+        assert!(!youtube_url("magnet:?xt=urn:btih:foo"));
     }
 }
