@@ -125,14 +125,18 @@ export default function App() {
           <div className="history">
             {(() => {
               const recent = [...daily].reverse().slice(-14);
-              const maximum = Math.max(1, ...recent.map(item => item.downloaded_bytes));
+              const maximum = Math.max(1, ...recent.flatMap(item => [item.downloaded_bytes, item.uploaded_bytes]));
               return recent.length ? recent.map(item => <div className="history-col" key={item.day}
-                title={`${item.day}: ${prettyBytes(item.downloaded_bytes)}`}>
-                <div className="history-bar" style={{height: `${Math.max(4, 100 * item.downloaded_bytes / maximum)}%`}} />
+                title={`${item.day}: Downloaded ${prettyBytes(item.downloaded_bytes)} · Uploaded ${prettyBytes(item.uploaded_bytes)}`}>
+                <div className="history-bars">
+                  <div className="history-bar downloaded" style={{height: `${Math.max(4, 100 * item.downloaded_bytes / maximum)}%`}} />
+                  <div className="history-bar uploaded" style={{height: `${Math.max(4, 100 * item.uploaded_bytes / maximum)}%`}} />
+                </div>
                 <span>{item.day.slice(5)}</span>
               </div>) : <p>No traffic recorded yet.</p>;
             })()}
           </div>
+          <p className="history-legend"><span className="legend-down" /> Downloaded <span className="legend-up" /> Uploaded</p>
         </section>
         <section className="panel">
           <form onSubmit={addTask} className="add-form">

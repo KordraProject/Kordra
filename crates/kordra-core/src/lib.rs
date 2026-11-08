@@ -40,12 +40,14 @@ pub struct Statistics {
 pub struct DailyTransfer {
     pub day: String,
     pub downloaded_bytes: i64,
+    pub uploaded_bytes: i64,
 }
 #[derive(Debug, Serialize, FromRow)]
 pub struct EngineTransfer {
     pub engine: String,
     pub total_tasks: i64,
     pub downloaded_bytes: i64,
+    pub uploaded_bytes: i64,
     pub completed_tasks: i64,
 }
 
@@ -76,8 +78,15 @@ impl Database {
         )"#).execute(&pool).await?;
         sqlx::query("INSERT OR IGNORE INTO transfer_totals(id) VALUES (1)").execute(&pool).await?;
         sqlx::query(r#"CREATE TABLE IF NOT EXISTS daily_transfers (
-            day TEXT PRIMARY KEY, downloaded_bytes INTEGER NOT NULL DEFAULT 0
+            day TEXT PRIMARY KEY,
+            downloaded_bytes INTEGER NOT NULL DEFAULT 0,
+            uploaded_bytes INTEGER NOT NULL DEFAULT 0
         )"#).execute(&pool).await?;
+        if sqlx::query("SELECT name FROM pragma_table_info('daily_transfers') WHERE name = 'uploaded_bytes'")
+            .fetch_optional(&pool).await?.is_none() {
+            sqlx::query("ALTER TABLE daily_transfers ADD COLUMN uploaded_bytes INTEGER NOT NULL DEFAULT 0")
+                .execute(&pool).await?;
+        }
         // Tasks interrupted by previous process termination are not silently retried.
         sqlx::query("UPDATE downloads SET status = 'interrupted', updated_at = ? WHERE status = 'running'")
             .bind(Utc::now().to_rfc3339()).execute(&pool).await?;
@@ -145,12 +154,12 @@ impl Database {
         if delta_download > 0 || delta_upload > 0 {
             sqlx::query("UPDATE transfer_totals SET total_downloaded_bytes = total_downloaded_bytes + ?, total_uploaded_bytes = total_uploaded_bytes + ? WHERE id = 1")
                 .bind(delta_download).bind(delta_upload).execute(&mut *tx).await?;
-            if delta_download > 0 {
-                sqlx::query(r#"INSERT INTO daily_transfers(day, downloaded_bytes) VALUES(?, ?)
-                    ON CONFLICT(day) DO UPDATE SET downloaded_bytes = downloaded_bytes + excluded.downloaded_bytes"#)
-                    .bind(Utc::now().format("%Y-%m-%d").to_string()).bind(delta_download)
-                    .execute(&mut *tx).await?;
-            }
+            sqlx::query(r#"INSERT INTO daily_transfers(day, downloaded_bytes, uploaded_bytes) VALUES(?, ?, ?)
+                ON CONFLICT(day) DO UPDATE SET
+                downloaded_bytes = downloaded_bytes + excluded.downloaded_bytes,
+                uploaded_bytes = uploaded_bytes + excluded.uploaded_bytes"#)
+                .bind(Utc::now().format("%Y-%m-%d").to_string()).bind(delta_download).bind(delta_upload)
+                .execute(&mut *tx).await?;
         }
         tx.commit().await?;
         Ok(())
@@ -170,13 +179,14 @@ impl Database {
     }
     pub async fn daily_stats(&self) -> Result<Vec<DailyTransfer>> {
         Ok(sqlx::query_as::<_, DailyTransfer>(
-            "SELECT day, downloaded_bytes FROM daily_transfers ORDER BY day DESC LIMIT 365"
+            "SELECT day, downloaded_bytes, uploaded_bytes FROM daily_transfers ORDER BY day DESC LIMIT 365"
         ).fetch_all(&self.pool).await?)
     }
     pub async fn engine_stats(&self) -> Result<Vec<EngineTransfer>> {
         Ok(sqlx::query_as::<_, EngineTransfer>(r#"SELECT engine,
             COUNT(*) AS total_tasks,
             COALESCE(SUM(downloaded_bytes), 0) AS downloaded_bytes,
+            COALESCE(SUM(uploaded_bytes), 0) AS uploaded_bytes,
             SUM(CASE WHEN status = 'completed' THEN 1 ELSE 0 END) AS completed_tasks
             FROM downloads GROUP BY engine ORDER BY downloaded_bytes DESC"#)
             .fetch_all(&self.pool).await?)
@@ -205,12 +215,15 @@ mod tests {
         db.observe_received(&task.id, 80).await.unwrap();
         db.finish(&task.id, true, None).await.unwrap();
         db.finish(&task.id, true, None).await.unwrap();
+        db.observe_transfer(&task.id, 100, 250, 1000).await.unwrap();
+        db.observe_transfer(&task.id, 100, 250, 1000).await.unwrap();
         let s = db.stats().await.unwrap();
         assert_eq!(s.total_downloaded_bytes, 100);
-        assert_eq!(s.total_uploaded_bytes, 0);
+        assert_eq!(s.total_uploaded_bytes, 250);
         assert_eq!(s.completed_tasks, 1);
         assert_eq!(s.total_tasks, 1);
         assert_eq!(db.daily_stats().await.unwrap()[0].downloaded_bytes, 100);
+        assert_eq!(db.daily_stats().await.unwrap()[0].uploaded_bytes, 250);
         assert_eq!(db.engine_stats().await.unwrap()[0].completed_tasks, 1);
         drop(db);
         let _ = tokio::fs::remove_dir_all(dir).await;

@@ -28,7 +28,7 @@ export type EngineState = {
   installed: string[];
 };
 
-export type DailyTransfer = { day: string; downloaded_bytes: number };
+export type DailyTransfer = { day: string; downloaded_bytes: number; uploaded_bytes: number };
 export type EngineTransfer = { engine: string; downloaded_bytes: number; total_tasks: number; completed_tasks: number };
 
 export type TorrentDetails = {

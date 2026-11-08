@@ -185,7 +185,11 @@ async fn metrics_endpoint(State(state): State<ApiState>, headers: HeaderMap) -> 
         Ok(value) => value,
         Err(error) => return internal(error).into_response(),
     };
-    let body = format!(
+    let by_engine = match state.db.engine_stats().await {
+        Ok(items) => items,
+        Err(error) => return internal(error).into_response(),
+    };
+    let mut body = format!(
         "# HELP kordra_download_bytes_total Total bytes downloaded, persisted in SQLite\n\
          # TYPE kordra_download_bytes_total counter\n\
          kordra_download_bytes_total {}\n\
@@ -207,5 +211,13 @@ async fn metrics_endpoint(State(state): State<ApiState>, headers: HeaderMap) -> 
         stats.total_downloaded_bytes, stats.total_uploaded_bytes, stats.total_tasks,
         stats.active_tasks, stats.completed_tasks, stats.failed_tasks
     );
+    body.push_str("# HELP kordra_engine_download_bytes_total Downloaded bytes by engine\n# TYPE kordra_engine_download_bytes_total counter\n");
+    body.push_str("# HELP kordra_engine_upload_bytes_total Uploaded bytes by engine\n# TYPE kordra_engine_upload_bytes_total counter\n");
+    for engine in by_engine {
+        // Engine IDs come from a strict allowlist in task validation; defensive escape anyway.
+        let label = engine.engine.replace('\\', "\\\\").replace('"', "\\\"");
+        body.push_str(&format!("kordra_engine_download_bytes_total{{engine=\"{label}\"}} {}\n", engine.downloaded_bytes));
+        body.push_str(&format!("kordra_engine_upload_bytes_total{{engine=\"{label}\"}} {}\n", engine.uploaded_bytes));
+    }
     ([(header::CONTENT_TYPE, "text/plain; version=0.0.4; charset=utf-8")], body).into_response()
 }
