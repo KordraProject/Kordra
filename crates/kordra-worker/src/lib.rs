@@ -69,10 +69,11 @@ impl Worker {
         // The rqbit session continues seeding until Kordra exits. Upload counters remain visible.
         let db = self.db.clone();
         let id = task.id.clone();
+        let seeding_handle = handle.clone();
         tokio::spawn(async move {
             loop {
                 tokio::time::sleep(Duration::from_secs(10)).await;
-                let stats = handle.stats();
+                let stats = seeding_handle.stats();
                 if let Err(error) = db.observe_transfer(&id, stats.progress_bytes, stats.uploaded_bytes, stats.total_bytes).await {
                     tracing::warn!(task_id=%id, "seeding stats unavailable: {error:#}");
                     break;
