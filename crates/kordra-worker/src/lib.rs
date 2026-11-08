@@ -1,13 +1,14 @@
 //! First real task executor: yt-dlp as a managed child process (no shell).
-//! Full job cancellation, process-tree supervision and media selection follow later.
+//! Cancellation of CLI jobs is supported; full process-tree supervision remains planned.
 mod lifecycle;
 pub use lifecycle::{ColdRetention, EngineLifecyclePolicy, PolicyStore, StartupMode};
 use anyhow::{bail, Context, Result};
 use kordra_core::{Database, Download};
 use kordra_engine_manager::{DenoManager, YtDlpManager};
 use kordra_torrent::TorrentEngine;
-use std::{path::PathBuf, process::Stdio, sync::Arc, time::Duration};
-use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command, sync::Semaphore};
+use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command, sync::{Mutex, Semaphore}};
+use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
 pub struct Worker {
@@ -17,12 +18,14 @@ pub struct Worker {
     torrents: TorrentEngine,
     downloads: PathBuf,
     lifecycle: PolicyStore,
+    running_cli: Arc<Mutex<HashMap<String, CancellationToken>>>,
     limit: Arc<Semaphore>,
 }
 impl Worker {
     pub fn new(db: Database, manager: YtDlpManager, deno: DenoManager, downloads: PathBuf, lifecycle: PolicyStore, concurrency: usize) -> Self {
         Self { db, manager, deno, torrents: TorrentEngine::new(downloads.clone()), downloads,
-            lifecycle, limit: Arc::new(Semaphore::new(concurrency.max(1))) }
+            lifecycle, running_cli: Arc::new(Mutex::new(HashMap::new())),
+            limit: Arc::new(Semaphore::new(concurrency.max(1))) }
     }
     pub async fn lifecycle_policy(&self) -> EngineLifecyclePolicy { self.lifecycle.get().await }
     pub async fn lifecycle_status(&self) -> Result<serde_json::Value> {
@@ -75,12 +78,48 @@ impl Worker {
             let id = item.id.clone();
             if let Err(error) = this.run(item).await {
                 tracing::error!(task_id=%id, "download failed: {error:#}");
+                // If cancellation won the race with a child process error, do not
+                // leave the task indefinitely in the transient 'cancelling' state.
+                if let Ok(Some(task)) = this.db.get(&id).await {
+                    if task.status == "cancelling" {
+                        let _ = this.db.finish_cancelled(&id).await;
+                        return;
+                    }
+                }
                 if let Err(db_error) = this.db.finish(&id, false, Some(&error.to_string())).await {
                     tracing::error!(task_id=%id, "could not persist failure: {db_error:#}");
                 }
             }
         });
     }
+    /// Cancel queued/paused tasks immediately, or request termination of a live
+    /// yt-dlp subprocess. Active torrents require a safe deletion implementation.
+    pub async fn cancel(&self, id: &str) -> Result<Download> {
+        let item = self.db.get(id).await?.context("task not found")?;
+        match item.status.as_str() {
+            "queued" => {
+                if !self.db.transition(id, "queued", "cancelled").await? {
+                    bail!("task state changed before cancellation");
+                }
+            }
+            "paused" if !self.torrents.has_task(id).await => {
+                if !self.db.transition(id, "paused", "cancelled").await? {
+                    bail!("task state changed before cancellation");
+                }
+            }
+            "running" if item.engine == "yt-dlp" => {
+                let token = self.running_cli.lock().await.get(id).cloned()
+                    .context("yt-dlp worker is not yet ready for cancellation")?;
+                if !self.db.transition(id, "running", "cancelling").await? {
+                    bail!("task state changed before cancellation");
+                }
+                token.cancel();
+            }
+            _ => bail!("cancellation is unsupported for this engine or task state"),
+        }
+        self.db.get(id).await?.context("task not found")
+    }
+
     pub async fn torrent_details(&self, id: &str) -> Result<serde_json::Value> {
         self.torrents.details(id).await.context("torrent is not active in this process")
     }
@@ -132,16 +171,24 @@ impl Worker {
     }
 
     pub async fn enqueue_pending(&self) -> Result<()> {
-        for task in self.db.list().await? {
-            if task.status == "queued" { self.enqueue(task); }
-        }
+        for task in self.db.list_queued().await? { self.enqueue(task); }
         Ok(())
     }
     async fn run(&self, task: Download) -> Result<()> {
         let _permit = self.limit.acquire().await?;
+        if task.engine == "yt-dlp" {
+            let token = CancellationToken::new();
+            self.running_cli.lock().await.insert(task.id.clone(), token.clone());
+            if !self.db.set_running(&task.id).await? {
+                self.running_cli.lock().await.remove(&task.id);
+                return Ok(());
+            }
+            let outcome = self.run_ytdlp(task.clone(), token).await;
+            self.running_cli.lock().await.remove(&task.id);
+            return outcome;
+        }
         if !self.db.set_running(&task.id).await? { return Ok(()); }
         match task.engine.as_str() {
-            "yt-dlp" => self.run_ytdlp(task).await,
             "librqbit" => self.run_torrent(task).await,
             other => anyhow::bail!("unsupported engine: {other}"),
         }
@@ -188,12 +235,24 @@ impl Worker {
         });
         Ok(())
     }
-    async fn run_ytdlp(&self, task: Download) -> Result<()> {
-        let binary = self.manager.ensure_active().await?;
+    async fn run_ytdlp(&self, task: Download, cancellation: CancellationToken) -> Result<()> {
+        let binary = tokio::select! {
+            result = self.manager.ensure_active() => result?,
+            _ = cancellation.cancelled() => {
+                self.db.finish_cancelled(&task.id).await?;
+                return Ok(());
+            }
+        };
         tokio::fs::create_dir_all(&self.downloads).await?;
         let mut command = Command::new(binary);
         if youtube_url(&task.source) {
-            let deno = self.deno.ensure_active().await.context("installing Deno required for YouTube")?;
+            let deno = tokio::select! {
+                result = self.deno.ensure_active() => result.context("installing Deno required for YouTube")?,
+                _ = cancellation.cancelled() => {
+                    self.db.finish_cancelled(&task.id).await?;
+                    return Ok(());
+                }
+            };
             command.arg("--js-runtimes").arg(format!("deno:{}", deno.display()));
         }
         let mut child = command
@@ -220,11 +279,26 @@ impl Worker {
         let db_out = self.db.clone();
         let id_out = task.id.clone();
         let out_reader = tokio::spawn(async move { scan_progress(stdout, &db_out, &id_out).await; });
-        let status = child.wait().await?;
+        let status = tokio::select! {
+            result = child.wait() => Some(result?),
+            _ = cancellation.cancelled() => {
+                // Stop and reap the direct child; grandchildren require dedicated
+                // process-tree supervision (Windows Job Object/Unix process group).
+                let _ = child.kill().await;
+                None
+            }
+        };
         let _ = tokio::join!(err_reader, out_reader);
+        if status.is_none() {
+            self.db.finish_cancelled(&task.id).await?;
+            return Ok(());
+        }
+        let status = status.context("missing yt-dlp exit status")?;
         if status.success() {
             self.db.finish(&task.id, true, None).await?;
-        } else {
+            // A concurrent cancellation request can win just before completion.
+            self.db.finish_cancelled(&task.id).await?;
+        } else if !self.db.finish_cancelled(&task.id).await? {
             anyhow::bail!("yt-dlp exited with {status}");
         }
         Ok(())

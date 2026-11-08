@@ -33,6 +33,7 @@ enum Operation {
     Pause { id: String },
     Resume { id: String },
     Retry { id: String },
+    Cancel { id: String },
 }
 #[tokio::main]
 async fn main() -> Result<()> {
@@ -63,6 +64,7 @@ async fn main() -> Result<()> {
         Operation::Pause { id } => (true, format!("/downloads/{id}/pause"), None),
         Operation::Resume { id } => (true, format!("/downloads/{id}/resume"), None),
         Operation::Retry { id } => (true, format!("/downloads/{id}/retry"), None),
+        Operation::Cancel { id } => (true, format!("/downloads/{id}/cancel"), None),
     };
     let client = reqwest::Client::new();
     let request = if route == "/engines/lifecycle" && post { client.put(format!("{url}{route}")) }

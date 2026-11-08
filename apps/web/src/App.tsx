@@ -8,7 +8,7 @@ const emptyStats: Stats = {
 };
 const themeKey = "kordra-theme";
 const accentKey = "kordra-accent";
-type Filter = "all" | "active" | "completed" | "failed";
+type Filter = "all" | "active" | "completed" | "failed" | "cancelled";
 type Theme = "dark" | "light";
 
 export default function App() {
@@ -70,9 +70,10 @@ export default function App() {
   }, [refresh]);
   const visible = useMemo(() => tasks.filter(task => {
     const statusMatch = filter === "all" ||
-      (filter === "active" && ["running", "queued"].includes(task.status)) ||
+      (filter === "active" && ["running", "queued", "cancelling"].includes(task.status)) ||
       (filter === "completed" && task.status === "completed") ||
-      (filter === "failed" && ["failed", "interrupted"].includes(task.status));
+      (filter === "failed" && ["failed", "interrupted"].includes(task.status)) ||
+      (filter === "cancelled" && task.status === "cancelled");
     return statusMatch && `${task.source} ${task.engine} ${task.id}`.toLowerCase().includes(search.toLowerCase());
   }), [tasks, filter, search]);
 
@@ -159,7 +160,7 @@ export default function App() {
           <div className="panel-head"><div><h2>Download queue</h2><p>{tasks.length} total tasks · Updated {lastUpdated || "—"}</p></div>
             <button className="button secondary" onClick={() => void operation(refresh)} disabled={busy}>Refresh</button></div>
           <div className="filters">
-            {(["all", "active", "completed", "failed"] as Filter[]).map(item =>
+            {(["all", "active", "completed", "failed", "cancelled"] as Filter[]).map(item =>
               <button key={item} className={filter === item ? "filter active" : "filter"}
                 onClick={() => setFilter(item)}>{item}</button>)}
             <input className="search" aria-label="Search downloads" placeholder="Search tasks..." value={search}
@@ -184,6 +185,10 @@ export default function App() {
                 {task.status === "paused" &&
                 <button className="button secondary" disabled={busy}
                   onClick={() => void operation(() => post(`/downloads/${task.id}/resume`, token))}>Resume</button>}
+                {(task.status === "queued" || task.status === "paused" ||
+                  (task.status === "running" && task.engine === "yt-dlp")) &&
+                  <button className="button secondary" disabled={busy}
+                    onClick={() => void operation(() => post(`/downloads/${task.id}/cancel`, token))}>Cancel</button>}
                 {(task.status === "failed" || task.status === "interrupted") &&
                   <button className="button secondary" disabled={busy}
                     onClick={() => void operation(() => post(`/downloads/${task.id}/retry`, token))}>Retry</button>}
