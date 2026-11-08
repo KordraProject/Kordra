@@ -41,6 +41,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/downloads/{id}/pause", post(pause_download))
         .route("/downloads/{id}/torrent", get(torrent_details))
         .route("/downloads/{id}/resume", post(resume_download))
+        .route("/downloads/{id}/retry", post(retry_download))
         .route("/engines/capabilities", get(capabilities))
         .route("/engines/lifecycle", get(engine_lifecycle).put(set_engine_lifecycle))
         .route("/engines/{id}/prepare", post(prepare_engine))
@@ -117,6 +118,11 @@ async fn pause_download(Path(id): Path<String>, State(state): State<ApiState>) -
 }
 async fn resume_download(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<Download>> {
     state.worker.resume(&id).await.map(Json).map_err(invalid)
+}
+async fn retry_download(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<Download>> {
+    state.worker.retry(&id).await.map(Json).map_err(|error| {
+        (StatusCode::CONFLICT, Json(ErrorBody { error: error.to_string() }))
+    })
 }
 async fn new_download(State(state): State<ApiState>, Json(req): Json<NewDownload>) -> ApiResult<(StatusCode, Json<Download>)> {
     if req.engine != "yt-dlp" && req.engine != "librqbit" {

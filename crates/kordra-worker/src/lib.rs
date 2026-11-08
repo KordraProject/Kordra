@@ -122,6 +122,15 @@ impl Worker {
         self.db.get(id).await?.context("task not found")
     }
 
+    /// Restart a failed/interrupted job using the same task ID and download location.
+    /// Running, queued, paused, and completed tasks are never retried by this endpoint.
+    pub async fn retry(&self, id: &str) -> Result<Download> {
+        let task = self.db.requeue_failed(id).await?
+            .context("task is not failed/interrupted or does not exist")?;
+        self.enqueue(task.clone());
+        Ok(task)
+    }
+
     pub async fn enqueue_pending(&self) -> Result<()> {
         for task in self.db.list().await? {
             if task.status == "queued" { self.enqueue(task); }
