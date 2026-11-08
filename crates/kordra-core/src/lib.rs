@@ -103,6 +103,12 @@ impl Database {
         Ok(sqlx::query_as::<_, Download>("SELECT * FROM downloads ORDER BY created_at DESC LIMIT 500")
             .fetch_all(&self.pool).await?)
     }
+    /// Retrieve the entire startup backlog in FIFO order, not only the last 500 UI rows.
+    pub async fn list_queued(&self) -> Result<Vec<Download>> {
+        Ok(sqlx::query_as::<_, Download>(
+            "SELECT * FROM downloads WHERE status = 'queued' ORDER BY created_at ASC, id ASC"
+        ).fetch_all(&self.pool).await?)
+    }
     pub async fn get(&self, id: &str) -> Result<Option<Download>> {
         Ok(sqlx::query_as::<_, Download>("SELECT * FROM downloads WHERE id = ?")
             .bind(id).fetch_optional(&self.pool).await?)
@@ -140,6 +146,10 @@ impl Database {
             .bind(Utc::now().to_rfc3339()).bind(id).execute(&self.pool).await?;
         if updated.rows_affected() == 0 { return Ok(None); }
         self.get(id).await
+    }
+    /// Complete an acknowledged cancellation without recording a task failure.
+    pub async fn finish_cancelled(&self, id: &str) -> Result<bool> {
+        self.transition(id, "cancelling", "cancelled").await
     }
     pub async fn set_running(&self, id: &str) -> Result<bool> {
         let result = sqlx::query("UPDATE downloads SET status = 'running', attempts = attempts + 1, error = NULL, updated_at = ? WHERE id = ? AND status = 'queued'")
@@ -180,7 +190,7 @@ impl Database {
     }
     pub async fn finish(&self, id: &str, success: bool, error: Option<&str>) -> Result<()> {
         let mut tx = self.pool.begin().await?;
-        let result = sqlx::query("UPDATE downloads SET status = ?, error = ?, updated_at = ? WHERE id = ? AND status = 'running'")
+        let result = sqlx::query("UPDATE downloads SET status = ?, error = ?, updated_at = ? WHERE id = ? AND status IN ('running', 'paused')")
             .bind(if success { "completed" } else { "failed" })
             .bind(error).bind(Utc::now().to_rfc3339()).bind(id).execute(&mut *tx).await?;
         if result.rows_affected() == 1 {
@@ -240,6 +250,39 @@ mod tests {
         assert_eq!(db.daily_stats().await.unwrap()[0].downloaded_bytes, 100);
         assert_eq!(db.daily_stats().await.unwrap()[0].uploaded_bytes, 250);
         assert_eq!(db.engine_stats().await.unwrap()[0].completed_tasks, 1);
+        drop(db);
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+
+    #[tokio::test]
+    async fn cancellation_transitions_preserve_correct_counts() {
+        let dir = std::env::temp_dir().join(format!("kordra-cancel-{}", Uuid::new_v4()));
+        let db = Database::open(&dir).await.unwrap();
+        let queued = db.create(NewDownload { source: "https://example.org/q".into(), engine: "yt-dlp".into() }).await.unwrap();
+        assert!(db.transition(&queued.id, "queued", "cancelled").await.unwrap());
+        assert!(!db.set_running(&queued.id).await.unwrap());
+        let running = db.create(NewDownload { source: "https://example.org/r".into(), engine: "yt-dlp".into() }).await.unwrap();
+        assert!(db.set_running(&running.id).await.unwrap());
+        assert!(db.transition(&running.id, "running", "cancelling").await.unwrap());
+        assert!(db.finish_cancelled(&running.id).await.unwrap());
+        assert!(!db.finish_cancelled(&running.id).await.unwrap());
+        let totals = db.stats().await.unwrap();
+        assert_eq!(totals.completed_tasks, 0);
+        assert_eq!(totals.failed_tasks, 0);
+        assert_eq!(db.get(&running.id).await.unwrap().unwrap().status, "cancelled");
+        drop(db);
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+
+    #[tokio::test]
+    async fn pending_backlog_is_not_limited_by_ui_pagination() {
+        let dir = std::env::temp_dir().join(format!("kordra-backlog-{}", Uuid::new_v4()));
+        let db = Database::open(&dir).await.unwrap();
+        for index in 0..503 {
+            db.create(NewDownload { source: format!("https://example.org/{index}"), engine: "yt-dlp".into() }).await.unwrap();
+        }
+        assert_eq!(db.list().await.unwrap().len(), 500);
+        assert_eq!(db.list_queued().await.unwrap().len(), 503);
         drop(db);
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
