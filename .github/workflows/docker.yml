@@ -1,8 +1,7 @@
 name: Docker - GitHub hosted
 on:
   workflow_dispatch:
-  push:
-    branches: [main]
+  pull_request:
     paths: ["docker/**", "apps/**", "crates/**", "Cargo.toml", "Cargo.lock"]
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
