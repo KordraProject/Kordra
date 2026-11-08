@@ -1,6 +1,6 @@
 name: Publish Docker image to GHCR
 on:
-  # Automated GHCR builds belong to headless.yml's unified release pipeline.
+  workflow_dispatch: # Manual recovery build; automatic GHCR images are published by headless.yml.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
