@@ -1,19 +1,8 @@
 name: Desktop installer smoke builds
 on:
-  push:
-    branches: [main]
-    paths:
-      - "apps/desktop/**"
-      - "apps/web/**"
-      - "crates/**"
-      - "apps/kordra-daemon/**"
-      - "Cargo.toml"
-      - ".github/workflows/desktop.yml"
   pull_request:
   workflow_dispatch:
-concurrency:
-  group: ${{ github.workflow }}-${{ github.ref }}
-  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+  workflow_call:
 permissions:
   contents: read
 jobs:

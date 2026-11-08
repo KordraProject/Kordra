@@ -1,18 +1,25 @@
-name: Headless binaries / GitHub releases
+name: Build and publish Kordra releases
 on:
   push:
     branches: [main]
     tags: ["v*"]
   workflow_dispatch:
+
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
 
 permissions:
   contents: read
+
 jobs:
-  binary:
+  validate:
+    uses: ./.github/workflows/ci.yml
+
+  headless:
+    needs: validate
     runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
     strategy:
       fail-fast: false
       matrix:
@@ -29,9 +36,9 @@ jobs:
         with:
           targets: ${{ matrix.triple }}
       - uses: Swatinem/rust-cache@v2
-      - name: Build headless daemon and CLI
+      - name: Build daemon and CLI
         run: cargo build --release --target ${{ matrix.triple }} -p kordra-daemon -p kordra-cli
-      - name: Package archives
+      - name: Archive headless binaries
         shell: bash
         env:
           TARGET: ${{ matrix.triple }}
@@ -53,9 +60,48 @@ jobs:
         with:
           name: kordra-headless-${{ matrix.triple }}
           path: packages/*.zip
+          if-no-files-found: error
+
+  desktop:
+    needs: validate
+    uses: ./.github/workflows/desktop.yml
+
+  docker:
+    needs: validate
+    runs-on: ubuntu-24.04
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+      - uses: docker/setup-qemu-action@v3
+      - uses: docker/setup-buildx-action@v3
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          images: ghcr.io/kordraproject/kordra
+          tags: |
+            type=raw,value=edge,enable=${{ github.ref == 'refs/heads/main' }}
+            type=sha,format=long
+            type=ref,event=tag
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          file: docker/Dockerfile
+          platforms: linux/amd64,linux/arm64
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+
   release:
-    if: startsWith(github.ref, 'refs/tags/v')
-    needs: binary
+    name: Publish complete pre-alpha
+    needs: [validate, headless, desktop, docker]
     runs-on: ubuntu-24.04
     permissions:
       contents: write
@@ -65,8 +111,54 @@ jobs:
           pattern: kordra-headless-*
           path: assets
           merge-multiple: true
+      - uses: actions/download-artifact@v4
+        with:
+          pattern: kordra-desktop-*
+          path: assets
+          merge-multiple: true
+      - name: Check all platforms and generate checksums
+        shell: bash
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          import hashlib
+          assets = Path("assets")
+          required = [
+              f"kordra-headless-{t}.zip"
+              for t in ("x86_64-unknown-linux-gnu", "aarch64-unknown-linux-gnu", "x86_64-pc-windows-msvc")
+          ] + [
+              f"kordra-desktop-portable-{t}.zip"
+              for t in ("x86_64-unknown-linux-gnu", "x86_64-pc-windows-msvc")
+          ]
+          missing = [v for v in required if not (assets / v).is_file()]
+          suffixes = {".msi", ".exe", ".deb", ".rpm", ".AppImage"}
+          missing_types = [v for v in suffixes if not any(p.name.endswith(v) for p in assets.iterdir())]
+          if missing or missing_types:
+              raise SystemExit(f"Incomplete release: {missing=} {missing_types=}")
+          payloads = sorted(p for p in assets.iterdir() if p.is_file())
+          (assets / "SHA256SUMS.txt").write_text("".join(
+              f"{hashlib.sha256(p.read_bytes()).hexdigest()}  {p.name}\n" for p in payloads
+          ))
+          print(f"Verified {len(payloads)} release assets + SHA256SUMS.txt")
+          PY
       - uses: softprops/action-gh-release@v2
         with:
-          files: assets/*.zip
+          tag_name: ${{ startsWith(github.ref, 'refs/tags/v') && github.ref_name || format('v0.1.0-dev.{0}', github.run_number) }}
+          target_commitish: ${{ github.sha }}
+          name: Kordra pre-alpha ${{ github.run_number }}
           prerelease: true
           generate_release_notes: true
+          fail_on_unmatched_files: true
+          body: |
+            Pre-alpha build of Kordra from commit ${{ github.sha }}.
+            Includes headless Windows/Linux x64 and Linux ARM64, desktop Windows MSI/NSIS/portable,
+            desktop Linux DEB/RPM/AppImage/portable, and SHA-256 checksums.
+
+            Docker image (linux/amd64 and linux/arm64):
+            `ghcr.io/kordraproject/kordra:sha-${{ github.sha }}`
+
+            Remote node agent releases:
+            https://github.com/KordraProject/Kordra-Agent/releases
+
+            This is experimental software. Built on GitHub-hosted runners only.
+          files: assets/*

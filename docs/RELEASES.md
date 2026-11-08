@@ -1,13 +1,17 @@
-# Releases and pre-alpha artifacts
+# GitHub Releases and all currently supported builds
 
-No personal servers, VPS or self-hosted runners are used. All packages, Docker images and tests are built exclusively on GitHub-hosted Actions runners.
+Kordra publishes **pre-alpha releases automatically** from each successful main commit and version-tagged build. Release creation is gated on GitHub-hosted Rust tests, React compilation, all headless builds, both Tauri desktop package builds and multiarch GHCR publishing.
 
-- Every main push runs the Rust CI checks and creates temporary **headless** artifacts for Windows x64, Linux x64 and Linux arm64.
-- Tags beginning with `v` create pre-release GitHub Releases with those headless archives after successful build.
-- Docker publishes `ghcr.io/kordraproject/kordra:edge` on main and a versioned tag on a tagged release, building for linux/amd64 and linux/arm64 with Buildx/QEMU.
-- A separate Docker CI workflow performs dry-run builds on main without pushing.
-- Kordra-Agent has independent CI, artifacts and release workflow.
+A release includes:
+- Windows x64: headless daemon + CLI ZIP, Desktop NSIS EXE, MSI and desktop portable ZIP
+- Linux x64: headless daemon + CLI ZIP, Desktop DEB/RPM/AppImage and desktop portable ZIP
+- Linux ARM64: headless daemon + CLI ZIP
+- `SHA256SUMS.txt` covering release assets
+- Docker image: `ghcr.io/kordraproject/kordra:sha-<full-commit-sha>` (linux/amd64 and linux/arm64)
+- Kordra-Agent independently publishes its own release ZIPs for Windows x64, Linux x64 and Linux ARM64.
 
-**Important:** desktop installers (.msi/.exe/AppImage/.deb/.rpm), portable GUI archives, the Telegram bot and advanced downloader integrations have not been implemented. An installed Docker image exposes the pre-alpha Web UI and API but native public HTTPS is not yet ready.
+The release refuses to publish if even one required desktop package is missing or fails to build. This is deliberate: we never call incomplete archives a full release.
 
-GitHub Packages may require the organization owner to set the GHCR package visibility to public after its first publish.
+**Planned, not shipped yet:** Windows ARM64 desktop/headless and Linux ARM64 desktop installers; reliable portable data mode, native Tauri background service/tray, signing, Telegram, TLS and fully featured downloader engines.
+
+On release pushes, existing CI and desktop workflows are invoked as reusable workflows by the unified pipeline to prevent duplicate compilation. No VPS, personal server or self-hosted runner is used in development, build or testing.

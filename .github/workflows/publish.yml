@@ -1,8 +1,6 @@
 name: Publish Docker image to GHCR
 on:
-  push:
-    branches: [main]
-    tags: ["v*"]
+  # Automated GHCR builds belong to headless.yml's unified release pipeline.
 concurrency:
   group: ${{ github.workflow }}-${{ github.ref }}
   cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
