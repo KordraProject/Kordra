@@ -10,3 +10,4 @@ kordra-engine-manager = { path = "../kordra-engine-manager" }
 kordra-torrent = { path = "../kordra-torrent" }
 tokio.workspace = true
 tracing.workspace = true
+serde_json.workspace = true

@@ -31,6 +31,9 @@ impl Worker {
             }
         });
     }
+    pub async fn torrent_details(&self, id: &str) -> Result<serde_json::Value> {
+        self.torrents.details(id).await.context("torrent is not active in this process")
+    }
     /// Pause queued tasks, or active librqbit torrents. yt-dlp process suspension is planned.
     pub async fn pause(&self, id: &str) -> Result<Download> {
         let item = self.db.get(id).await?.context("task not found")?;

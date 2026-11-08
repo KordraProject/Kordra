@@ -2,6 +2,7 @@
 //! Remote authentication, file priority controls and persistence integration come next.
 use anyhow::{bail, Context, Result};
 use librqbit::{AddTorrent, AddTorrentResponse, ManagedTorrent, Session};
+use serde_json::{json, Value};
 use std::{collections::HashMap, path::PathBuf, sync::Arc};
 use tokio::sync::{OnceCell, RwLock};
 
@@ -40,6 +41,22 @@ impl TorrentEngine {
         }
     }
 
+    /// Live diagnostic snapshot; never starts a torrent or reads arbitrary filesystem paths.
+    pub async fn details(&self, task_id: &str) -> Option<Value> {
+        let handle = self.active.read().await.get(task_id).cloned()?;
+        let stats = handle.stats();
+        let trackers: Vec<String> = handle.shared().trackers.iter().map(ToString::to_string).collect();
+        Some(json!({
+            "id": handle.id(),
+            "name": handle.name(),
+            "info_hash": handle.info_hash().as_string(),
+            "paused": handle.is_paused(),
+            "output_folder": handle.output_folder().to_string_lossy(),
+            "only_files": handle.only_files(),
+            "trackers": trackers,
+            "stats": stats
+        }))
+    }
     pub async fn has_task(&self, task_id: &str) -> bool {
         self.active.read().await.contains_key(task_id)
     }

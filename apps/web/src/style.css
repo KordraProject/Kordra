@@ -121,3 +121,12 @@ footer { color: var(--muted); font-size: 12px; padding: 12px 0 26px; }
 .task-progress { min-width: 82px; font-size: 12px; }
 .task-bar { height: 5px; width: 100%; background: var(--border); border-radius: 10px; overflow: hidden; margin-top: 5px; }
 .task-bar > div { height: 100%; background: var(--accent); border-radius: 10px; }
+
+.torrent-details h3 { font-size: 14px; margin: 18px 0 10px; }
+.torrent-metadata { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 10px; }
+.torrent-metadata > div { background: var(--input); border-radius: 9px; padding: 12px; min-width: 0; }
+.torrent-metadata span { display: block; color: var(--muted); font-size: 11px; }
+.torrent-metadata strong { display: block; margin-top: 6px; overflow-wrap: anywhere; font-size: 14px; }
+.torrent-trackers { max-height: 150px; overflow-y: auto; overflow-wrap: anywhere; color: var(--muted); font-size: 12px; }
+.torrent-trackers > div { border-bottom: 1px solid var(--border); padding: 7px; }
+@media(max-width: 650px) { .torrent-metadata { grid-template-columns: repeat(2, minmax(0, 1fr)); } }

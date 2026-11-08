@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, post, prettyBytes } from "./api";
-import type { Channel, DailyTransfer, Download, EngineState, Stats } from "./types";
+import type { Channel, DailyTransfer, Download, EngineState, Stats, TorrentDetails } from "./types";
 
 const emptyStats: Stats = {
   total_downloaded_bytes: 0, total_uploaded_bytes: 0,
@@ -29,6 +29,7 @@ export default function App() {
   const [error, setError] = useState("");
   const [lastUpdated, setLastUpdated] = useState("");
   const [settingsOpen, setSettingsOpen] = useState(false);
+  const [selectedTorrent, setSelectedTorrent] = useState<{ taskId: string; details: TorrentDetails } | null>(null);
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
@@ -170,11 +171,35 @@ export default function App() {
                 {task.status === "paused" &&
                 <button className="button secondary" disabled={busy}
                   onClick={() => void operation(() => post(`/downloads/${task.id}/resume`, token))}>Resume</button>}
+                {task.engine === "librqbit" && task.status !== "queued" &&
+                  <button className="button secondary" disabled={busy}
+                    onClick={() => void operation(async () => {
+                      const details = await api<TorrentDetails>(`/downloads/${task.id}/torrent`, token);
+                      setSelectedTorrent({ taskId: task.id, details });
+                    })}>Details</button>}
               </td>
             </tr>)}
             {!visible.length && <tr><td colSpan={6} className="empty">No matching downloads yet.</td></tr>}
           </tbody></table></div>
         </section>
+        {selectedTorrent && <section className="panel torrent-details">
+          <div className="panel-head">
+            <div><h2>{selectedTorrent.details.name || "Torrent details"}</h2>
+              <p>Info hash: {selectedTorrent.details.info_hash}</p></div>
+            <button className="button secondary" onClick={() => setSelectedTorrent(null)}>Close</button>
+          </div>
+          <div className="torrent-metadata">
+            <div><span>Received</span><strong>{prettyBytes(selectedTorrent.details.stats.progress_bytes)}</strong></div>
+            <div><span>Uploaded</span><strong>{prettyBytes(selectedTorrent.details.stats.uploaded_bytes)}</strong></div>
+            <div><span>Total size</span><strong>{prettyBytes(selectedTorrent.details.stats.total_bytes)}</strong></div>
+            <div><span>Status</span><strong>{selectedTorrent.details.paused ? "Paused" : selectedTorrent.details.stats.finished ? "Seeding" : "Downloading"}</strong></div>
+          </div>
+          <h3>Trackers ({selectedTorrent.details.trackers.length})</h3>
+          <div className="torrent-trackers">
+            {selectedTorrent.details.trackers.length ? selectedTorrent.details.trackers.map(s => <div key={s}>{s}</div>) : <p>No trackers; torrent may use DHT.</p>}
+          </div>
+          <p>Files reported: {selectedTorrent.details.stats.file_progress.length}. Detailed names and file selection will be added in the next BitTorrent milestone.</p>
+        </section>}
         <section className="panel">
           <div className="panel-head"><div><h2>yt-dlp versions</h2><p>Managed executable, fallback and update policy.</p></div>
             <span className="chip">{engine?.active ?? "Not installed"}</span></div>

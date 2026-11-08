@@ -30,3 +30,21 @@ export type EngineState = {
 
 export type DailyTransfer = { day: string; downloaded_bytes: number };
 export type EngineTransfer = { engine: string; downloaded_bytes: number; total_tasks: number; completed_tasks: number };
+
+export type TorrentDetails = {
+  id: number;
+  name: string | null;
+  info_hash: string;
+  paused: boolean;
+  output_folder: string;
+  only_files: number[] | null;
+  trackers: string[];
+  stats: {
+    progress_bytes: number;
+    uploaded_bytes: number;
+    total_bytes: number;
+    finished: boolean;
+    error: string | null;
+    file_progress: number[];
+  };
+};
