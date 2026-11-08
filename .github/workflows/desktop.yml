@@ -1,0 +1,111 @@
+name: Desktop installer smoke builds
+on:
+  push:
+    branches: [main]
+    paths:
+      - "apps/desktop/**"
+      - "apps/web/**"
+      - "crates/**"
+      - "apps/kordra-daemon/**"
+      - "Cargo.toml"
+      - ".github/workflows/desktop.yml"
+  pull_request:
+  workflow_dispatch:
+concurrency:
+  group: ${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: ${{ github.ref == 'refs/heads/main' }}
+permissions:
+  contents: read
+jobs:
+  desktop:
+    name: Desktop ${{ matrix.target }}
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: windows-2022
+            target: x86_64-pc-windows-msvc
+            bundles: msi,nsis
+          - os: ubuntu-24.04
+            target: x86_64-unknown-linux-gnu
+            bundles: deb,rpm,appimage
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "22"
+      - uses: dtolnay/rust-toolchain@stable
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: |
+            . -> target
+            apps/desktop/src-tauri -> target
+      - name: Install Linux Tauri prerequisites
+        if: runner.os == 'Linux'
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y libwebkit2gtk-4.1-dev build-essential curl wget file libxdo-dev libssl-dev librsvg2-dev libayatana-appindicator3-dev patchelf rpm
+      - name: Install frontend dependencies
+        shell: bash
+        run: |
+          npm --prefix apps/web install --no-audit --no-fund
+          npm --prefix apps/desktop install --no-audit --no-fund
+      - name: Build headless sidecar
+        run: cargo build --release -p kordra-daemon -p kordra-cli
+      - name: Generate icon and platform sidecar
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          python apps/desktop/scripts/make_icons.py
+          python - <<'PY'
+          import os, shutil
+          from pathlib import Path
+          triple = os.environ["TARGET"]
+          ext = ".exe" if "windows" in triple else ""
+          source = Path("target/release") / ("kordra-daemon" + ext)
+          dest = Path("apps/desktop/src-tauri/binaries") / ("kordra-daemon-" + triple + ext)
+          dest.parent.mkdir(parents=True, exist_ok=True)
+          shutil.copy2(source, dest)
+          print(f"Sidecar: {dest}")
+          PY
+      - name: Build Tauri desktop packages
+        env:
+          VITE_KORDRA_API_BASE: http://127.0.0.1:8079
+        shell: bash
+        run: npm --prefix apps/desktop run build -- --bundles ${{ matrix.bundles }}
+      - name: Collect installers and portable archive
+        shell: bash
+        env:
+          TARGET: ${{ matrix.target }}
+        run: |
+          python - <<'PY'
+          import os, shutil, zipfile
+          from pathlib import Path
+          triple = os.environ["TARGET"]
+          ext = ".exe" if "windows" in triple else ""
+          out = Path("release-assets"); out.mkdir(exist_ok=True)
+          bundle = Path("apps/desktop/src-tauri/target/release/bundle")
+          allowed = {".msi", ".exe", ".deb", ".rpm", ".AppImage"}
+          packages = [p for p in bundle.rglob("*") if p.is_file() and (p.suffix in allowed)]
+          if not packages:
+              raise SystemExit(f"No installer assets found under {bundle}")
+          for package in packages:
+              name = f"kordra-desktop-{triple}-{package.name}"
+              shutil.copy2(package, out / name)
+              print(name)
+          executable = Path("apps/desktop/src-tauri/target/release") / ("kordra-desktop" + ext)
+          sidecar = Path("target/release") / ("kordra-daemon" + ext)
+          archive = out / f"kordra-desktop-portable-{triple}.zip"
+          with zipfile.ZipFile(archive, "w", zipfile.ZIP_DEFLATED) as zf:
+              zf.write(executable, executable.name)
+              zf.write(sidecar, sidecar.name)
+          print(archive)
+          PY
+      - uses: actions/upload-artifact@v4
+        with:
+          name: kordra-desktop-${{ matrix.target }}
+          path: release-assets/*
+          if-no-files-found: error
