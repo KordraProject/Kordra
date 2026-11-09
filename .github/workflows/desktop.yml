@@ -66,9 +66,23 @@ jobs:
         env:
           VITE_KORDRA_API_BASE: http://127.0.0.1:8079
         run: npm run build
-      - name: Build Tauri desktop packages
+      - name: Build Tauri desktop packages (retry transient upstream AppImage failures)
         working-directory: apps/desktop
-        run: npm run build -- --bundles ${{ matrix.bundles }}
+        shell: bash
+        env:
+          BUNDLES: ${{ matrix.bundles }}
+        run: |
+          for attempt in 1 2 3; do
+            if npm run build -- --bundles "$BUNDLES"; then
+              exit 0
+            fi
+            if [ "$attempt" -eq 3 ]; then
+              echo "::error::Tauri packaging failed after 3 attempts"
+              exit 1
+            fi
+            echo "::warning::Tauri packaging failed (attempt $attempt); retrying after delay"
+            sleep "$((attempt * 15))"
+          done
       - name: Collect installers and portable archive
         shell: bash
         env:
