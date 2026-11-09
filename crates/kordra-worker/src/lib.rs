@@ -154,6 +154,14 @@ impl Worker {
         }
         self.db.get(id).await?.context("task not found")
     }
+    pub async fn select_torrent_files(&self, id: &str, indices: &[usize]) -> Result<serde_json::Value> {
+        let task = self.db.get(id).await?.context("task not found")?;
+        if task.engine != "librqbit" || !matches!(task.status.as_str(), "running" | "paused") {
+            bail!("file selection requires an active or paused torrent");
+        }
+        self.torrents.select_files(id, indices).await?;
+        self.torrent_details(id).await
+    }
     pub async fn torrent_details(&self, id: &str) -> Result<serde_json::Value> {
         self.torrents.details(id).await.context("torrent is not active in this process")
     }

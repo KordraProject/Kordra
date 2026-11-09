@@ -40,6 +40,7 @@ export type TorrentDetails = {
   output_folder: string;
   only_files: number[] | null;
   trackers: string[];
+  files: Array<{ index: number; name: string; length: number; included: boolean; downloaded_bytes: number }>;
   stats: {
     progress_bytes: number;
     uploaded_bytes: number;

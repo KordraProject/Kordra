@@ -17,3 +17,9 @@ Current limitations:
 The universal queue's Cancel action now supports live torrents. Kordra asks librqbit to forget the torrent with `Session::delete(..., false)`, preserving all on-disk files. The task becomes `cancelled`, not `failed`. During initial magnet metadata resolution, cancellation may be unavailable until the managed handle is created.
 
 A completed torrent can stop uploading with `POST /api/v1/downloads/{id}/stop-seeding`. This preserves the completed history and local files. In cold/temporary mode seeding is already stopped automatically when the final torrent completes.
+
+## Select files to download
+
+`GET /api/v1/downloads/{id}/torrent` returns `files` as an array containing stable metadata indices, names, lengths, inclusion flags, and per-file downloaded bytes. The unified Web UI displays checkboxes and per-file progress.
+
+`POST /api/v1/downloads/{id}/torrent/files` with `{"only_files":[0,2,3]}` changes the selection of an active or paused torrent via `librqbit::Session::update_only_files`. Indices must be within metadata bounds; empty and oversized requests are rejected. Selection doesn't delete any already-downloaded files; completed task selection changes are not supported in this pre-alpha API.

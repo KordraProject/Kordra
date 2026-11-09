@@ -218,7 +218,22 @@ export default function App() {
           <div className="torrent-trackers">
             {selectedTorrent.details.trackers.length ? selectedTorrent.details.trackers.map(s => <div key={s}>{s}</div>) : <p>No trackers; torrent may use DHT.</p>}
           </div>
-          <p>Files reported: {selectedTorrent.details.stats.file_progress.length}. Detailed names and file selection will be added in the next BitTorrent milestone.</p>
+          <h3>Files ({selectedTorrent.details.files.length})</h3>
+          <div className="torrent-files">
+            {selectedTorrent.details.files.map(file => <label className="torrent-file" key={file.index}>
+              <input type="checkbox" checked={file.included}
+                disabled={busy || selectedTorrent.details.stats.finished}
+                onChange={event => void operation(async () => {
+                  const selected = selectedTorrent.details.files.filter(item => item.included).map(item => item.index);
+                  const next = event.target.checked ? [...selected, file.index] : selected.filter(idx => idx !== file.index);
+                  const details = await post<TorrentDetails>(`/downloads/${selectedTorrent.taskId}/torrent/files`, token, {only_files: next});
+                  setSelectedTorrent({ taskId: selectedTorrent.taskId, details });
+                })} />
+              <span className="torrent-file-name" title={file.name}>{file.name}</span>
+              <span className="torrent-file-size">{prettyBytes(file.downloaded_bytes)} / {prettyBytes(file.length)}</span>
+            </label>)}
+          </div>
+          <p>File selection updates the active torrent without deleting existing data. At least one file must remain selected.</p>
           {selectedTorrent.details.stats.finished &&
             <button className="button secondary" disabled={busy}
               onClick={() => void operation(async () => {
