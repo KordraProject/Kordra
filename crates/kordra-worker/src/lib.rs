@@ -6,7 +6,7 @@ use anyhow::{bail, Context, Result};
 use kordra_core::{Database, Download};
 use kordra_engine_manager::{DenoManager, YtDlpManager};
 use kordra_torrent::TorrentEngine;
-use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
+use std::{collections::{HashMap, HashSet}, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
 use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command, sync::{Mutex, Semaphore}};
 use tokio_util::sync::CancellationToken;
 
@@ -19,12 +19,14 @@ pub struct Worker {
     downloads: PathBuf,
     lifecycle: PolicyStore,
     running_cli: Arc<Mutex<HashMap<String, CancellationToken>>>,
+    restoring_seeds: Arc<Mutex<HashSet<String>>>,
     limit: Arc<Semaphore>,
 }
 impl Worker {
     pub fn new(db: Database, manager: YtDlpManager, deno: DenoManager, downloads: PathBuf, lifecycle: PolicyStore, concurrency: usize) -> Self {
         Self { db, manager, deno, torrents: TorrentEngine::new(downloads.clone()), downloads,
             lifecycle, running_cli: Arc::new(Mutex::new(HashMap::new())),
+            restoring_seeds: Arc::new(Mutex::new(HashSet::new())),
             limit: Arc::new(Semaphore::new(concurrency.max(1))) }
     }
     pub async fn lifecycle_policy(&self) -> EngineLifecyclePolicy { self.lifecycle.get().await }
@@ -55,7 +57,11 @@ impl Worker {
         Ok(())
     }
     pub async fn set_lifecycle_policy(&self, policy: EngineLifecyclePolicy) -> Result<EngineLifecyclePolicy> {
+        let old = self.lifecycle.get().await;
         self.lifecycle.update(policy).await?;
+        if policy.retain_after_use() && !old.retain_after_use() {
+            self.restore_completed_torrents().await?;
+        }
         if policy.startup == StartupMode::Hot {
             self.apply_startup_policy().await?;
         } else if !policy.retain_after_use() {
@@ -145,12 +151,17 @@ impl Worker {
         if task.engine != "librqbit" || task.status != "completed" {
             bail!("only completed and actively seeding torrents can stop seeding");
         }
-        if let Some((down, up, size)) = self.torrents.transfer_snapshot(id).await {
-            self.db.observe_transfer(id, down, up, size).await?;
-        }
-        self.torrents.forget_task(id).await?;
-        if !self.lifecycle.get().await.retain_after_use() {
-            self.torrents.cool_if_idle().await;
+        // Persist the user's decision first so a crash or in-flight restore
+        // cannot make the completed torrent restart uploading on next launch.
+        self.db.disable_torrent_seeding(id).await?;
+        if self.torrents.has_task(id).await {
+            if let Some((down, up, size)) = self.torrents.transfer_snapshot(id).await {
+                self.db.observe_transfer(id, down, up, size).await?;
+            }
+            self.torrents.forget_task(id).await?;
+            if !self.lifecycle.get().await.retain_after_use() {
+                self.torrents.cool_if_idle().await;
+            }
         }
         self.db.get(id).await?.context("task not found")
     }
@@ -160,6 +171,7 @@ impl Worker {
             bail!("file selection requires an active or paused torrent");
         }
         self.torrents.select_files(id, indices).await?;
+        self.db.save_torrent_selection(id, indices).await?;
         self.torrent_details(id).await
     }
     pub async fn torrent_details(&self, id: &str) -> Result<serde_json::Value> {
@@ -212,6 +224,36 @@ impl Worker {
         Ok(task)
     }
 
+    /// Re-attach completed BitTorrent jobs from SQLite on daemon startup.
+    /// Failures are logged but never change completed tasks into failures.
+    /// The shared semaphore caps concurrent disk rechecks and metadata resolution.
+    pub async fn restore_completed_torrents(&self) -> Result<()> {
+        if !self.lifecycle.get().await.retain_after_use() { return Ok(()); }
+        for item in self.db.completed_torrents_to_seed().await? {
+            if self.torrents.has_task(&item.id).await { continue; }
+            {
+                let mut restoring = self.restoring_seeds.lock().await;
+                if !restoring.insert(item.id.clone()) { continue; }
+            }
+            let this = self.clone();
+            tokio::spawn(async move {
+                let id = item.id.clone();
+                let result = async {
+                    let _permit = this.limit.acquire().await?;
+                    if !this.db.torrent_preferences(&id).await?.is_some_and(|p| p.seed_enabled) {
+                        return Ok(());
+                    }
+                    if this.torrents.has_task(&id).await { return Ok(()); }
+                    this.run_torrent(item).await
+                }.await;
+                if let Err(error) = result {
+                    tracing::warn!(task_id=%id, "cannot reattach completed torrent: {error:#}");
+                }
+                this.restoring_seeds.lock().await.remove(&id);
+            });
+        }
+        Ok(())
+    }
     pub async fn enqueue_pending(&self) -> Result<()> {
         for task in self.db.list_queued().await? { self.enqueue(task); }
         Ok(())
@@ -236,7 +278,26 @@ impl Worker {
         }
     }
     async fn run_torrent(&self, task: Download) -> Result<()> {
-        let handle = self.torrents.add(&task.id, &task.source).await?;
+        let preferences = self.db.torrent_preferences(&task.id).await?
+            .context("missing torrent database task")?;
+        if task.status == "completed" && !preferences.seed_enabled {
+            return Ok(());
+        }
+        // A new librqbit handle has a fresh upload counter. Preserve the
+        // database's previous upload total when retrying or reattaching seeds.
+        let upload_offset = if task.attempts > 0 || task.status == "completed" {
+            u64::try_from(task.uploaded_bytes.max(0))?
+        } else { 0 };
+        let resume = task.attempts > 0 || task.status == "completed";
+        let handle = self.torrents.add(
+            &task.id, &task.source, preferences.only_files, resume
+        ).await?;
+        // Stop-seeding may have been requested while magnet metadata resolved.
+        if task.status == "completed" && !self.db.torrent_preferences(&task.id).await?
+            .is_some_and(|p| p.seed_enabled) {
+            self.torrents.forget_task(&task.id).await?;
+            return Ok(());
+        }
         let mut ticks = tokio::time::interval(Duration::from_secs(2));
         let completed = handle.wait_until_completed();
         tokio::pin!(completed);
@@ -245,28 +306,34 @@ impl Worker {
                 result = &mut completed => {
                     result?;
                     let stats = handle.stats();
-                    self.db.observe_transfer(&task.id, stats.progress_bytes, stats.uploaded_bytes, stats.total_bytes).await?;
+                    self.db.observe_transfer(&task.id, stats.progress_bytes,
+                        upload_offset.saturating_add(stats.uploaded_bytes), stats.total_bytes).await?;
                     self.db.finish(&task.id, true, None).await?;
                     break;
                 }
                 _ = ticks.tick() => {
                     let stats = handle.stats();
-                    self.db.observe_transfer(&task.id, stats.progress_bytes, stats.uploaded_bytes, stats.total_bytes).await?;
+                    self.db.observe_transfer(&task.id, stats.progress_bytes,
+                        upload_offset.saturating_add(stats.uploaded_bytes), stats.total_bytes).await?;
                 }
             }
         }
-        // The torrent might have been removed concurrently with completion.
+        // An active torrent could have been removed or its seed intent disabled
+        // while finishing the recheck; do not launch a second seed monitor.
         if self.db.get(&task.id).await?.is_some_and(|record| record.status != "completed") {
             return Ok(());
         }
         if !self.torrents.has_task(&task.id).await { return Ok(()); }
+        if !self.db.torrent_preferences(&task.id).await?.is_some_and(|p| p.seed_enabled) {
+            self.torrents.forget_task(&task.id).await?;
+            return Ok(());
+        }
         if !self.lifecycle.get().await.retain_after_use() {
-            // Temporary cold mode stops seeding and releases the session once the
-            // last active torrent finishes. Persistent/hot mode continues seeding.
             self.torrents.finish_temporary(&task.id).await?;
             return Ok(());
         }
-        // Persistent and hot modes allow completed torrents to seed until exit.
+        // Keep seeding after download; count new uploads on top of the
+        // last value persisted by an earlier Kordra process.
         let db = self.db.clone();
         let id = task.id.clone();
         let seeding_handle = handle.clone();
@@ -276,7 +343,8 @@ impl Worker {
                 tokio::time::sleep(Duration::from_secs(10)).await;
                 if !torrents.has_task(&id).await { break; }
                 let stats = seeding_handle.stats();
-                if let Err(error) = db.observe_transfer(&id, stats.progress_bytes, stats.uploaded_bytes, stats.total_bytes).await {
+                if let Err(error) = db.observe_transfer(&id, stats.progress_bytes,
+                    upload_offset.saturating_add(stats.uploaded_bytes), stats.total_bytes).await {
                     tracing::warn!(task_id=%id, "seeding stats unavailable: {error:#}");
                     break;
                 }

@@ -26,6 +26,9 @@ async fn main() -> Result<()> {
     let lifecycle = PolicyStore::open(data).await?;
     let worker = Worker::new(db.clone(), manager.clone(), deno.clone(), downloads, lifecycle, 2);
     worker.apply_startup_policy().await?;
+    // Reattach successful torrents in persistent/hot mode without blocking the
+    // API listener on tracker, metadata or disk validation.
+    worker.restore_completed_torrents().await?;
     worker.enqueue_pending().await?;
     let updater = manager.clone();
     tokio::spawn(async move {
