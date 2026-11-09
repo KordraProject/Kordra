@@ -220,6 +220,33 @@ impl Database {
     pub async fn finish_cancelled(&self, id: &str) -> Result<bool> {
         self.transition(id, "cancelling", "cancelled").await
     }
+    /// Single atomic FIFO claim, so concurrent workers never execute the same job.
+    /// SQLite RETURNING returns the *updated* attempt number and persisted
+    /// progress, preventing stale snapshots from resetting retry counters.
+    pub async fn claim_next(&self) -> Result<Option<Download>> {
+        Ok(sqlx::query_as::<_, Download>(r#"
+            UPDATE downloads
+            SET status = 'running', attempts = attempts + 1, error = NULL, updated_at = ?
+            WHERE id = (
+                SELECT id FROM downloads WHERE status = 'queued'
+                ORDER BY created_at ASC, id ASC LIMIT 1
+            ) AND status = 'queued'
+            RETURNING *
+        "#)
+            .bind(Utc::now().to_rfc3339())
+            .fetch_optional(&self.pool).await?)
+    }
+    pub async fn queue_counts(&self) -> Result<(i64, i64, i64)> {
+        use sqlx::Row;
+        let row = sqlx::query(r#"
+            SELECT
+                COUNT(*) FILTER (WHERE status = 'queued'),
+                COUNT(*) FILTER (WHERE status = 'running'),
+                COUNT(*) FILTER (WHERE status = 'paused')
+            FROM downloads
+        "#).fetch_one(&self.pool).await?;
+        Ok((row.try_get(0)?, row.try_get(1)?, row.try_get(2)?))
+    }
     pub async fn set_running(&self, id: &str) -> Result<bool> {
         let result = sqlx::query("UPDATE downloads SET status = 'running', attempts = attempts + 1, error = NULL, updated_at = ? WHERE id = ? AND status = 'queued'")
             .bind(Utc::now().to_rfc3339()).bind(id).execute(&self.pool).await?;
@@ -379,6 +406,62 @@ mod tests {
         assert_eq!(totals.failed_tasks, 0);
         assert_eq!(db.get(&running.id).await.unwrap().unwrap().status, "cancelled");
         drop(db);
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+
+    #[tokio::test]
+    async fn atomic_fifo_claim_never_duplicates_under_concurrency() {
+        use std::collections::HashSet;
+        let dir = std::env::temp_dir().join(format!("kordra-claim-{}", Uuid::new_v4()));
+        let db = Database::open(&dir).await.unwrap();
+        let mut original = Vec::new();
+        for index in 0..36 {
+            let item = db.create(NewDownload {
+                source: format!("https://example.org/claim/{index}"),
+                engine: "yt-dlp".into()
+            }).await.unwrap();
+            original.push(item.id);
+        }
+        let work = (0..12).map(|_| {
+            let db = db.clone();
+            tokio::spawn(async move {
+                let mut claimed = Vec::new();
+                while let Some(item) = db.claim_next().await.unwrap() {
+                    assert_eq!(item.status, "running");
+                    assert_eq!(item.attempts, 1);
+                    claimed.push(item.id);
+                }
+                claimed
+            })
+        });
+        let mut all = Vec::new();
+        for job in work { all.extend(job.await.unwrap()); }
+        let unique: HashSet<_> = all.iter().collect();
+        assert_eq!(unique.len(), original.len());
+        assert_eq!(all.len(), original.len());
+        let (queued, active, paused) = db.queue_counts().await.unwrap();
+        assert_eq!((queued, active, paused), (0, 36, 0));
+        assert!(db.claim_next().await.unwrap().is_none());
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+
+    #[tokio::test]
+    async fn queue_cancel_and_pause_prevent_future_claims() {
+        let dir = std::env::temp_dir().join(format!("kordra-claim-cancel-{}", Uuid::new_v4()));
+        let db = Database::open(&dir).await.unwrap();
+        let cancelled = db.create(NewDownload { source: "https://example.org/a".into(), engine: "yt-dlp".into() }).await.unwrap();
+        let paused = db.create(NewDownload { source: "https://example.org/b".into(), engine: "yt-dlp".into() }).await.unwrap();
+        let running = db.create(NewDownload { source: "https://example.org/c".into(), engine: "yt-dlp".into() }).await.unwrap();
+        assert!(db.transition(&cancelled.id, "queued", "cancelled").await.unwrap());
+        assert!(db.transition(&paused.id, "queued", "paused").await.unwrap());
+        let item = db.claim_next().await.unwrap().unwrap();
+        assert_eq!(item.id, running.id);
+        assert!(db.claim_next().await.unwrap().is_none());
+        assert!(db.transition(&paused.id, "paused", "queued").await.unwrap());
+        let item = db.claim_next().await.unwrap().unwrap();
+        assert_eq!(item.id, paused.id);
+        assert_eq!(item.attempts, 1);
+        assert!(db.get(&cancelled.id).await.unwrap().unwrap().attempts == 0);
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
 
