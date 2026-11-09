@@ -19,6 +19,7 @@ pub struct Download {
     pub uploaded_bytes: i64,
     pub total_bytes: i64,
     pub attempts: i64,
+    pub priority: i64,
     pub error: Option<String>,
     pub created_at: String,
     pub updated_at: String,
@@ -86,6 +87,13 @@ impl Database {
             sqlx::query("ALTER TABLE downloads ADD COLUMN attempts INTEGER NOT NULL DEFAULT 0")
                 .execute(&pool).await?;
         }
+        if sqlx::query("SELECT name FROM pragma_table_info('downloads') WHERE name = 'priority'")
+            .fetch_optional(&pool).await?.is_none() {
+            sqlx::query("ALTER TABLE downloads ADD COLUMN priority INTEGER NOT NULL DEFAULT 0")
+                .execute(&pool).await?;
+        }
+        sqlx::query(r#"CREATE INDEX IF NOT EXISTS idx_download_queue
+            ON downloads(status, priority DESC, created_at, id)"#).execute(&pool).await?;
         sqlx::query(r#"CREATE TABLE IF NOT EXISTS transfer_totals (
             id INTEGER PRIMARY KEY CHECK(id = 1),
             total_downloaded_bytes INTEGER NOT NULL DEFAULT 0,
@@ -193,7 +201,7 @@ impl Database {
         let now = Utc::now().to_rfc3339();
         let task = Download { id: Uuid::new_v4().to_string(), source: req.source,
             engine: req.engine, status: "queued".into(), downloaded_bytes: 0,
-            uploaded_bytes: 0, total_bytes: 0, attempts: 0, error: None, created_at: now.clone(), updated_at: now };
+            uploaded_bytes: 0, total_bytes: 0, attempts: 0, priority: 0, error: None, created_at: now.clone(), updated_at: now };
         sqlx::query("INSERT INTO downloads(id, source, engine, status, downloaded_bytes, uploaded_bytes, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)")
             .bind(&task.id).bind(&task.source).bind(&task.engine).bind(&task.status)
             .bind(task.downloaded_bytes).bind(task.uploaded_bytes).bind(&task.created_at)
@@ -223,13 +231,27 @@ impl Database {
     /// Single atomic FIFO claim, so concurrent workers never execute the same job.
     /// SQLite RETURNING returns the *updated* attempt number and persisted
     /// progress, preventing stale snapshots from resetting retry counters.
+    /// Set a queued or paused task's priority. A running job is never
+    /// interrupted or moved when its priority changes.
+    pub async fn set_priority(&self, id: &str, value: i64) -> Result<Option<Download>> {
+        if !(-2..=2).contains(&value) {
+            bail!("priority must be between -2 and 2");
+        }
+        Ok(sqlx::query_as::<_, Download>(r#"
+            UPDATE downloads SET priority = ?, updated_at = ?
+            WHERE id = ? AND status IN ('queued', 'paused')
+            RETURNING *
+        "#)
+            .bind(value).bind(Utc::now().to_rfc3339()).bind(id)
+            .fetch_optional(&self.pool).await?)
+    }
     pub async fn claim_next(&self) -> Result<Option<Download>> {
         Ok(sqlx::query_as::<_, Download>(r#"
             UPDATE downloads
             SET status = 'running', attempts = attempts + 1, error = NULL, updated_at = ?
             WHERE id = (
                 SELECT id FROM downloads WHERE status = 'queued'
-                ORDER BY created_at ASC, id ASC LIMIT 1
+                ORDER BY priority DESC, created_at ASC, id ASC LIMIT 1
             ) AND status = 'queued'
             RETURNING *
         "#)
@@ -443,6 +465,30 @@ mod tests {
         assert_eq!((queued, active, paused), (0, 36, 0));
         assert!(db.claim_next().await.unwrap().is_none());
         drop(db);
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+
+    #[tokio::test]
+    async fn queue_priorities_are_persistent_and_cannot_preempt_running_tasks() {
+        let dir = std::env::temp_dir().join(format!("kordra-priority-{}", Uuid::new_v4()));
+        let db = Database::open(&dir).await.unwrap();
+        let low = db.create(NewDownload { source: "https://example.org/low".into(), engine: "yt-dlp".into() }).await.unwrap();
+        let normal = db.create(NewDownload { source: "https://example.org/normal".into(), engine: "yt-dlp".into() }).await.unwrap();
+        let high = db.create(NewDownload { source: "https://example.org/high".into(), engine: "yt-dlp".into() }).await.unwrap();
+        assert_eq!(db.set_priority(&low.id, -2).await.unwrap().unwrap().priority, -2);
+        assert_eq!(db.set_priority(&high.id, 2).await.unwrap().unwrap().priority, 2);
+        assert!(db.set_priority(&normal.id, 3).await.is_err());
+        assert!(db.set_priority("missing", 1).await.unwrap().is_none());
+        let first = db.claim_next().await.unwrap().unwrap();
+        assert_eq!(first.id, high.id);
+        assert!(db.set_priority(&high.id, -1).await.unwrap().is_none());
+        assert_eq!(db.claim_next().await.unwrap().unwrap().id, normal.id);
+        assert_eq!(db.claim_next().await.unwrap().unwrap().id, low.id);
+        drop(db);
+        let reopened = Database::open(&dir).await.unwrap();
+        assert_eq!(reopened.get(&high.id).await.unwrap().unwrap().priority, 2);
+        assert_eq!(reopened.get(&low.id).await.unwrap().unwrap().priority, -2);
+        drop(reopened);
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
 

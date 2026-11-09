@@ -15,7 +15,8 @@
 - [x] Hot/cold startup modes and temporary/persistent cold retention for embedded librqbit, CLI adapter readiness and Web/API/CLI controls.
 - [ ] Full per-engine resource policies, cancellation, resume and process-tree supervision.
 - [x] Fixed-size SQLite-backed queue dispatcher, atomic FIFO claim, cancellation handoff and queue status API.
-- [ ] Priority scheduling, rate limits, dynamic concurrency, full process-tree isolation.
+- [x] Durable task priority (five levels), FIFO within levels and live priority editing.
+- [ ] Rate limits, dynamic concurrency, full process-tree isolation.
 - [ ] WebSocket events and detailed transfer histories.
 - [ ] UI drag/drop editable layouts, advanced themes and i18n.
 - [ ] Tauri 2 desktop and installers for Windows/Linux (MSI/EXE/portable, deb/rpm/AppImage).

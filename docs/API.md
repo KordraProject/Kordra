@@ -13,6 +13,7 @@ Default bind: `http://127.0.0.1:8079`. Optional bearer token via `KORDRA_API_TOK
 | POST | /api/v1/downloads/{id}/torrent/files | Update selected file indices: `{"only_files":[0,1]}` for active/paused torrent |
 | POST | /api/v1/downloads/{id}/resume | Resume paused task (requeue or unpause torrent) |
 | POST | /api/v1/downloads/{id}/retry | Retry failed/interrupted task; returns 409 for ineligible states |
+| PUT | /api/v1/downloads/{id}/priority | Set queued/paused priority, integer from -2 to 2; 409 otherwise |
 | POST | /api/v1/downloads/{id}/cancel | Cancel queued, paused, active yt-dlp or active librqbit; preserve files |
 | POST | /api/v1/downloads/{id}/stop-seeding | Forget completed torrent from session; keep downloaded files and completed history |
 | GET | /api/v1/engines/capabilities | Discover implemented engines and capabilities |
