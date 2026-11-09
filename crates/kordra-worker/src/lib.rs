@@ -6,8 +6,8 @@ use anyhow::{bail, Context, Result};
 use kordra_core::{Database, Download};
 use kordra_engine_manager::{DenoManager, YtDlpManager};
 use kordra_torrent::TorrentEngine;
-use std::{collections::{HashMap, HashSet}, path::PathBuf, process::Stdio, sync::Arc, time::Duration};
-use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command, sync::{Mutex, Semaphore}};
+use std::{collections::{HashMap, HashSet}, path::PathBuf, process::Stdio, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
+use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command, sync::{Mutex, Notify, Semaphore}};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -20,14 +20,27 @@ pub struct Worker {
     lifecycle: PolicyStore,
     running_cli: Arc<Mutex<HashMap<String, CancellationToken>>>,
     restoring_seeds: Arc<Mutex<HashSet<String>>>,
+    queue_notify: Arc<Notify>,
+    queue_started: Arc<AtomicBool>,
+    worker_count: usize,
     limit: Arc<Semaphore>,
 }
 impl Worker {
     pub fn new(db: Database, manager: YtDlpManager, deno: DenoManager, downloads: PathBuf, lifecycle: PolicyStore, concurrency: usize) -> Self {
+        let worker_count = concurrency.clamp(1, 32);
         Self { db, manager, deno, torrents: TorrentEngine::new(downloads.clone()), downloads,
             lifecycle, running_cli: Arc::new(Mutex::new(HashMap::new())),
             restoring_seeds: Arc::new(Mutex::new(HashSet::new())),
-            limit: Arc::new(Semaphore::new(concurrency.max(1))) }
+            queue_notify: Arc::new(Notify::new()), queue_started: Arc::new(AtomicBool::new(false)),
+            worker_count, limit: Arc::new(Semaphore::new(worker_count)) }
+    }
+    pub async fn queue_status(&self) -> Result<serde_json::Value> {
+        let (queued, running, paused) = self.db.queue_counts().await?;
+        Ok(serde_json::json!({
+            "queued":queued, "running":running, "paused":paused,
+            "max_concurrent":self.worker_count,
+            "available_slots":self.limit.available_permits()
+        }))
     }
     pub async fn lifecycle_policy(&self) -> EngineLifecyclePolicy { self.lifecycle.get().await }
     pub async fn lifecycle_status(&self) -> Result<serde_json::Value> {
@@ -78,26 +91,85 @@ impl Worker {
         }
         self.lifecycle_status().await
     }
-    pub fn enqueue(&self, item: Download) {
-        let this = self.clone();
-        tokio::spawn(async move {
-            let id = item.id.clone();
-            if let Err(error) = this.run(item).await {
-                tracing::error!(task_id=%id, "download failed: {error:#}");
-                // If cancellation won the race with a child process error, do not
-                // leave the task indefinitely in the transient 'cancelling' state.
-                if let Ok(Some(task)) = this.db.get(&id).await {
-                    if task.status == "cancelling" {
-                        let _ = this.db.finish_cancelled(&id).await;
-                        return;
+    /// SQLite is the queue of record: signal fixed workers, never spawn a
+    /// sleeping Tokio task for every queued download.
+    pub fn enqueue(&self, _item: Download) {
+        self.queue_notify.notify_one();
+    }
+
+    async fn execute_claimed(&self, item: Download) -> Result<()> {
+        match item.engine.as_str() {
+            "yt-dlp" => {
+                let token = CancellationToken::new();
+                {
+                    // The cancellation endpoint takes this same mutex while it
+                    // updates SQLite, closing the claim/registration race.
+                    let mut handles = self.running_cli.lock().await;
+                    match self.db.get(&item.id).await?.map(|record| record.status) {
+                        Some(status) if status == "running" => {
+                            handles.insert(item.id.clone(), token.clone());
+                        }
+                        Some(status) if status == "cancelling" => {
+                            self.db.finish_cancelled(&item.id).await?;
+                            return Ok(());
+                        }
+                        _ => return Ok(()),
                     }
                 }
-                if let Err(db_error) = this.db.finish(&id, false, Some(&error.to_string())).await {
-                    tracing::error!(task_id=%id, "could not persist failure: {db_error:#}");
+                let outcome = self.run_ytdlp(item.clone(), token).await;
+                self.running_cli.lock().await.remove(&item.id);
+                outcome
+            }
+            "librqbit" => self.run_torrent(item).await,
+            other => bail!("unsupported engine: {other}"),
+        }
+    }
+
+    async fn handle_task_error(&self, id: &str, error: anyhow::Error) {
+        tracing::error!(task_id=%id, "download failed: {error:#}");
+        // If a cancellation beat an engine error, finish it as cancelled.
+        if let Ok(Some(task)) = self.db.get(id).await {
+            if task.status == "cancelling" {
+                let _ = self.db.finish_cancelled(id).await;
+                return;
+            }
+        }
+        if let Err(db_error) = self.db.finish(id, false, Some(&error.to_string())).await {
+            tracing::error!(task_id=%id, "could not persist failure: {db_error:#}");
+        }
+    }
+
+    /// Long-lived, fixed-size dispatcher loop. A registered notification
+    /// precedes the database check, so no enqueue wake-up can be lost.
+    async fn queue_worker_loop(&self) {
+        loop {
+            let wake = self.queue_notify.notified();
+            tokio::pin!(wake);
+            wake.as_mut().enable();
+            let _permit = match self.limit.acquire().await {
+                Ok(permit) => permit,
+                Err(_) => return,
+            };
+            match self.db.claim_next().await {
+                Ok(Some(task)) => {
+                    let id = task.id.clone();
+                    if let Err(error) = self.execute_claimed(task).await {
+                        self.handle_task_error(&id, error).await;
+                    }
+                }
+                Ok(None) => {
+                    drop(_permit);
+                    wake.await;
+                }
+                Err(error) => {
+                    tracing::error!("could not claim queued download: {error:#}");
+                    drop(_permit);
+                    tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
-        });
+        }
     }
+
     /// Cancel queued/paused tasks immediately, or request termination of a live
     /// yt-dlp subprocess. Active torrents require a safe deletion implementation.
     pub async fn cancel(&self, id: &str) -> Result<Download> {
@@ -114,12 +186,14 @@ impl Worker {
                 }
             }
             "running" if item.engine == "yt-dlp" => {
-                let token = self.running_cli.lock().await.get(id).cloned()
-                    .context("yt-dlp worker is not yet ready for cancellation")?;
+                // Hold the registration lock through the SQLite transition.
+                // If the worker has not registered yet, it will notice the
+                // cancelling state before launching any subprocess.
+                let handles = self.running_cli.lock().await;
                 if !self.db.transition(id, "running", "cancelling").await? {
                     bail!("task state changed before cancellation");
                 }
-                token.cancel();
+                if let Some(token) = handles.get(id) { token.cancel(); }
             }
             "running" | "paused" if item.engine == "librqbit" => {
                 if !self.torrents.has_task(id).await {
@@ -254,28 +328,17 @@ impl Worker {
         }
         Ok(())
     }
+    /// Start a bounded number of workers; every queued task is fetched
+    /// directly from the persistent database. Can be called multiple times.
     pub async fn enqueue_pending(&self) -> Result<()> {
-        for task in self.db.list_queued().await? { self.enqueue(task); }
-        Ok(())
-    }
-    async fn run(&self, task: Download) -> Result<()> {
-        let _permit = self.limit.acquire().await?;
-        if task.engine == "yt-dlp" {
-            let token = CancellationToken::new();
-            self.running_cli.lock().await.insert(task.id.clone(), token.clone());
-            if !self.db.set_running(&task.id).await? {
-                self.running_cli.lock().await.remove(&task.id);
-                return Ok(());
+        if !self.queue_started.swap(true, Ordering::AcqRel) {
+            for _ in 0..self.worker_count {
+                let this = self.clone();
+                tokio::spawn(async move { this.queue_worker_loop().await; });
             }
-            let outcome = self.run_ytdlp(task.clone(), token).await;
-            self.running_cli.lock().await.remove(&task.id);
-            return outcome;
         }
-        if !self.db.set_running(&task.id).await? { return Ok(()); }
-        match task.engine.as_str() {
-            "librqbit" => self.run_torrent(task).await,
-            other => anyhow::bail!("unsupported engine: {other}"),
-        }
+        self.queue_notify.notify_waiters();
+        Ok(())
     }
     async fn run_torrent(&self, task: Download) -> Result<()> {
         let preferences = self.db.torrent_preferences(&task.id).await?
@@ -285,10 +348,10 @@ impl Worker {
         }
         // A new librqbit handle has a fresh upload counter. Preserve the
         // database's previous upload total when retrying or reattaching seeds.
-        let upload_offset = if task.attempts > 0 || task.status == "completed" {
+        let upload_offset = if task.attempts > 1 || task.status == "completed" {
             u64::try_from(task.uploaded_bytes.max(0))?
         } else { 0 };
-        let resume = task.attempts > 0 || task.status == "completed";
+        let resume = task.attempts > 1 || task.status == "completed";
         let handle = self.torrents.add(
             &task.id, &task.source, preferences.only_files, resume
         ).await?;

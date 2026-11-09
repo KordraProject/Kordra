@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, post, prettyBytes } from "./api";
-import type { Channel, DailyTransfer, Download, EngineState, Stats, TorrentDetails, DenoState, EngineLifecycleStatus, StartupMode, ColdRetention } from "./types";
+import type { Channel, DailyTransfer, Download, EngineState, Stats, TorrentDetails, DenoState, EngineLifecycleStatus, StartupMode, ColdRetention, QueueStatus } from "./types";
 
 const emptyStats: Stats = {
   total_downloaded_bytes: 0, total_uploaded_bytes: 0,
@@ -18,6 +18,7 @@ export default function App() {
   const [tokenDraft, setTokenDraft] = useState(token);
   const [tasks, setTasks] = useState<Download[]>([]);
   const [stats, setStats] = useState<Stats>(emptyStats);
+  const [queue, setQueue] = useState<QueueStatus | null>(null);
   const [daily, setDaily] = useState<DailyTransfer[]>([]);
   const [engine, setEngine] = useState<EngineState | null>(null);
   const [deno, setDeno] = useState<DenoState | null>(null);
@@ -41,12 +42,13 @@ export default function App() {
     localStorage.setItem(accentKey, accent);
   }, [theme, accent]);
   const refresh = useCallback(async () => {
-    const [downloadList, summary, state, days, denoState, lifecycleStatus] = await Promise.all([
+    const [downloadList, summary, state, days, denoState, lifecycleStatus, queueStatus] = await Promise.all([
       api<Download[]>("/downloads", token), api<Stats>("/stats", token),
       api<EngineState>("/engines/yt-dlp", token),
       api<DailyTransfer[]>("/stats/daily", token),
       api<DenoState>("/runtimes/deno", token),
-      api<EngineLifecycleStatus>("/engines/lifecycle", token)
+      api<EngineLifecycleStatus>("/engines/lifecycle", token),
+      api<QueueStatus>("/queue", token)
     ]);
     setTasks(downloadList);
     setStats(summary);
@@ -54,6 +56,7 @@ export default function App() {
     setEngine(state);
     setDeno(denoState);
     setLifecycle(lifecycleStatus);
+    setQueue(queueStatus);
     setLastUpdated(new Date().toLocaleTimeString());
     setError("");
   }, [token]);
@@ -121,7 +124,8 @@ export default function App() {
         <section className="stats-grid" aria-label="Transfer statistics">
           <Stat label="Downloaded" value={prettyBytes(stats.total_downloaded_bytes)} />
           <Stat label="Uploaded" value={prettyBytes(stats.total_uploaded_bytes)} />
-          <Stat label="Active tasks" value={stats.active_tasks.toLocaleString()} />
+          <Stat label="Running" value={`${queue?.running ?? stats.active_tasks} / ${queue?.max_concurrent ?? 2}`} />
+          <Stat label="Waiting" value={(queue?.queued ?? 0).toLocaleString()} />
           <Stat label="Completed" value={stats.completed_tasks.toLocaleString()} />
         </section>
         <section className="panel">
@@ -157,7 +161,7 @@ export default function App() {
           </form>
         </section>
         <section className="panel">
-          <div className="panel-head"><div><h2>Download queue</h2><p>{tasks.length} total tasks · Updated {lastUpdated || "—"}</p></div>
+          <div className="panel-head"><div><h2>Download queue</h2><p>{stats.total_tasks} total tasks · {queue?.paused ?? 0} paused · Updated {lastUpdated || "—"}</p></div>
             <button className="button secondary" onClick={() => void operation(refresh)} disabled={busy}>Refresh</button></div>
           <div className="filters">
             {(["all", "active", "completed", "failed", "cancelled"] as Filter[]).map(item =>
