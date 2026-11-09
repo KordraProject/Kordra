@@ -66,6 +66,38 @@ jobs:
         env:
           VITE_KORDRA_API_BASE: http://127.0.0.1:8079
         run: npm run build
+      - name: Pre-cache checksum-verified Tauri AppRun
+        if: runner.os == 'Linux'
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          set -euo pipefail
+          tools_dir="${XDG_CACHE_HOME:-$HOME/.cache}/tauri"
+          mkdir -p "$tools_dir"
+          destination="$tools_dir/AppRun-x86_64"
+          expected="f30140a43a0a59e46db21bdefdf749b9e9f2c6946e92afabbacf98b8ae73fb4f"
+          if [ -f "$destination" ] && printf '%s  %s\n' "$expected" "$destination" | sha256sum -c --status; then
+            exit 0
+          fi
+          stage="$(mktemp "$tools_dir/AppRun.XXXXXXXX")"
+          trap 'rm -f "$stage"' EXIT
+          # Official asset ID and checksum from the upstream release's metadata.
+          # The authenticated GitHub API path avoids the broken public release URL.
+          if gh api -H "Accept: application/octet-stream" \
+              repos/tauri-apps/binary-releases/releases/assets/274691722 > "$stage" \
+              && printf '%s  %s\n' "$expected" "$stage" | sha256sum -c --status; then
+            echo "Verified upstream AppRun via GitHub API"
+          else
+            echo "::warning::API asset endpoint unavailable; trying official release URL"
+            curl --proto '=https' --tlsv1.2 --fail --location --retry 5 \
+              --retry-all-errors --retry-delay 8 --max-time 150 \
+              "https://github.com/tauri-apps/binary-releases/releases/download/apprun-old/AppRun-x86_64" \
+              --output "$stage"
+            printf '%s  %s\n' "$expected" "$stage" | sha256sum -c
+          fi
+          chmod 0755 "$stage"
+          mv -f "$stage" "$destination"
       - name: Build Tauri desktop packages (retry transient upstream AppImage failures)
         working-directory: apps/desktop
         shell: bash
