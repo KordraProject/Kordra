@@ -81,3 +81,10 @@ export type QueueStatus = {
   max_concurrent: number;
   available_slots: number;
 };
+
+export type TransferSettings = {
+  concurrency: number;
+  yt_dlp_download_bps: number | null;
+  torrent_download_bps: number | null;
+  torrent_upload_bps: number | null;
+};

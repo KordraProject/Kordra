@@ -38,3 +38,6 @@ Default bind: `http://127.0.0.1:8079`. Optional bearer token via `KORDRA_API_TOK
 Agent uses a separate protocol in its own repo; pairing and remote control are not shipped yet.
 
 This is not the final API. WebSocket streaming, task cancellation/retry, identity, roles, OpenAPI and formal capability negotiation are upcoming.
+
+| GET | /api/v1/queue/settings | Persisted max concurrency and download/upload rate limits (bytes per second) |
+| PUT | /api/v1/queue/settings | Atomically persist and apply full queue transfer settings, live resizing and torrent limit updates |
