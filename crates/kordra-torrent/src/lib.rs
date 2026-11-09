@@ -2,7 +2,7 @@
 use anyhow::{bail, Context, Result};
 use librqbit::{api::TorrentIdOrHash, AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session};
 use serde_json::{json, Value};
-use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::Arc};
+use std::{collections::{HashMap, HashSet}, num::NonZeroU32, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
 
 #[derive(Clone)]
@@ -11,18 +11,23 @@ pub struct TorrentEngine {
     session: Arc<Mutex<Option<Arc<Session>>>>,
     operations: Arc<Mutex<()>>,
     active: Arc<RwLock<HashMap<String, Arc<ManagedTorrent>>>>,
+    rate_settings: Arc<RwLock<(Option<u32>, Option<u32>)>>,
 }
 impl TorrentEngine {
     pub fn new(output: PathBuf) -> Self {
         Self { output, session: Arc::new(Mutex::new(None)),
             operations: Arc::new(Mutex::new(())),
-            active: Arc::new(RwLock::new(HashMap::new())) }
+            active: Arc::new(RwLock::new(HashMap::new())),
+            rate_settings: Arc::new(RwLock::new((None, None))) }
     }
     async fn session(&self) -> Result<Arc<Session>> {
         let mut guard = self.session.lock().await;
         if let Some(session) = guard.as_ref() { return Ok(session.clone()); }
         tokio::fs::create_dir_all(&self.output).await?;
         let instance = Session::new(self.output.clone()).await?;
+        let (download, upload) = *self.rate_settings.read().await;
+        instance.ratelimits.set_download_bps(download.and_then(NonZeroU32::new));
+        instance.ratelimits.set_upload_bps(upload.and_then(NonZeroU32::new));
         *guard = Some(instance.clone());
         Ok(instance)
     }
@@ -31,6 +36,18 @@ impl TorrentEngine {
         let _operation = self.operations.lock().await;
         let _ = self.session().await?;
         Ok(())
+    }
+    /// Apply global BitTorrent bandwidth limits to an already running session
+    /// and to any new session created in cold mode. 0/None means unlimited.
+    pub async fn set_rate_limits(&self, download_bps: Option<u32>, upload_bps: Option<u32>) {
+        *self.rate_settings.write().await = (download_bps, upload_bps);
+        if let Some(session) = self.session.lock().await.as_ref() {
+            session.ratelimits.set_download_bps(download_bps.and_then(NonZeroU32::new));
+            session.ratelimits.set_upload_bps(upload_bps.and_then(NonZeroU32::new));
+        }
+    }
+    pub async fn rate_limits(&self) -> (Option<u32>, Option<u32>) {
+        *self.rate_settings.read().await
     }
     pub async fn is_ready(&self) -> bool { self.session.lock().await.is_some() }
     pub async fn active_count(&self) -> usize { self.active.read().await.len() }
