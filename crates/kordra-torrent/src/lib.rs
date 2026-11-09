@@ -1,6 +1,6 @@
 //! Embedded BitTorrent session with hot/cold startup and idle teardown.
 use anyhow::{bail, Context, Result};
-use librqbit::{api::TorrentIdOrHash, AddTorrent, AddTorrentResponse, ManagedTorrent, Session};
+use librqbit::{api::TorrentIdOrHash, AddTorrent, AddTorrentOptions, AddTorrentResponse, ManagedTorrent, Session};
 use serde_json::{json, Value};
 use std::{collections::{HashMap, HashSet}, path::PathBuf, sync::Arc};
 use tokio::sync::{Mutex, RwLock};
@@ -35,14 +35,17 @@ impl TorrentEngine {
     pub async fn is_ready(&self) -> bool { self.session.lock().await.is_some() }
     pub async fn active_count(&self) -> usize { self.active.read().await.len() }
 
-    pub async fn add(&self, task_id: &str, source: &str) -> Result<Arc<ManagedTorrent>> {
+    pub async fn add(&self, task_id: &str, source: &str, only_files: Option<Vec<usize>>, resume: bool) -> Result<Arc<ManagedTorrent>> {
         if !(source.starts_with("magnet:?") || source.starts_with("https://") || source.starts_with("http://")) {
             bail!("only magnet links and HTTP(S) .torrent links are accepted");
         }
         // Serialize add/idle-stop so no new torrent is attached to a closing session.
         let _operation = self.operations.lock().await;
         let session = self.session().await?;
-        let result = session.add_torrent(AddTorrent::from_url(source), None).await?;
+        // Resuming against an existing file requires overwrite=true in librqbit.
+        // This reuses the same output root and lets librqbit re-check the data.
+        let opts = AddTorrentOptions { overwrite: resume, only_files, ..Default::default() };
+        let result = session.add_torrent(AddTorrent::from_url(source), Some(opts)).await?;
         match result {
             AddTorrentResponse::Added(_, handle) => {
                 self.active.write().await.insert(task_id.to_string(), handle.clone());
@@ -55,12 +58,10 @@ impl TorrentEngine {
     /// Temporary cold mode: forget one completed torrent without removing its files;
     /// stop all listeners after the final active task. Completed seeding is not retained.
     pub async fn finish_temporary(&self, task_id: &str) -> Result<()> {
-        let _operation = self.operations.lock().await;
-        self.active.write().await.remove(task_id);
-        if self.active.read().await.is_empty() {
-            let session = self.session.lock().await.take();
-            if let Some(session) = session { session.stop().await; }
-        }
+        // Removing a handle from our map alone did not remove the torrent
+        // from librqbit: it could continue uploading while another task ran.
+        self.forget_task(task_id).await?;
+        self.cool_if_idle().await;
         Ok(())
     }
     pub async fn cool_if_idle(&self) {
