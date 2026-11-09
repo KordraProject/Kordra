@@ -157,3 +157,6 @@ footer { color: var(--muted); font-size: 12px; padding: 12px 0 26px; }
 }
 
 .queue-priority { min-width: 98px; max-width: 120px; padding: 6px 8px; font-size: 12px; }
+
+/* Queue runtime settings reuse the same field grid as engine-version controls. */
+.version-grid input[type="number"] { width:100%; min-width:0; }

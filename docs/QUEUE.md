@@ -44,3 +44,35 @@ The yt-dlp registration and cancellation paths now take the same token-map mutex
 ## Task priorities
 
 A queued or paused task has a durable SQLite priority level: -2 Very low, -1 Low, 0 Normal (default), 1 High, 2 Very high. Higher priorities are claimed first; equal priorities remain FIFO by creation time and task ID. Change priority using the one queue's dropdown, `PUT /api/v1/downloads/{id}/priority` with `{"priority":1}`, or `kordra-cli set-priority <id> 1`. Changing priority does not preempt a running download or evict one already occupying a slot. The queued priority level persists across daemon restarts. The queue has an index on status/priority/creation time to keep claims responsive even with large SQLite backlogs.
+
+## Live concurrency & bandwidth controls
+
+The persisted configuration file `<KORDRA_DATA_DIR>/config/transfer-settings.json`
+contains `concurrency` (1..32), `yt_dlp_download_bps`,
+`torrent_download_bps` and `torrent_upload_bps`. A missing or `null`
+rate is unlimited. Fresh installations default to two parallel tasks and no rate
+limits; `KORDRA_CONCURRENCY` supplies the initial count only when no persisted
+transfer-settings.json exists.
+
+`GET /api/v1/queue/settings` reads the policy and
+`PUT /api/v1/queue/settings` updates and persists the whole object.
+The Web UI exposes values in KiB/s (1024 bytes per second).
+The CLI uses bytes per second:
+`kordra-cli transfer-settings` and
+`kordra-cli set-transfers 4 --yt-dlp-download-bps 1048576 --torrent-download-bps 2097152 --torrent-upload-bps 524288`.
+CLI value 0 or API null removes a limit.
+
+Kordra starts a fixed number of at most 32 small dispatcher tasks, independent
+of queued download count. A live atomic admission gate permits only the
+configured number of concurrent downloads (including torrent rechecks);
+increasing it wakes waiting dispatchers immediately. Decreasing it does not
+kill current downloads, and no more work is admitted until active work falls
+below the new limit.
+
+BitTorrent uses librqbit's built-in, session-wide upload/download rate limiters.
+They are applied immediately to running sessions and on new cold-start sessions.
+Each finite BitTorrent rate must be at least 65536 B/s due to limiter block
+sizing. yt-dlp receives `--limit-rate` for tasks **started after** a policy
+update; running CLI processes are not reconfigured. yt-dlp's limit is per job,
+not an aggregate cap across multiple simultaneous jobs. Other engines and
+external FFmpeg subprocesses are not yet guaranteed to respect these limits.

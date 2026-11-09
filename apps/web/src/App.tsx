@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useState } from "react";
 import { api, post, prettyBytes } from "./api";
-import type { Channel, DailyTransfer, Download, EngineState, Stats, TorrentDetails, DenoState, EngineLifecycleStatus, StartupMode, ColdRetention, QueueStatus } from "./types";
+import type { Channel, DailyTransfer, Download, EngineState, Stats, TorrentDetails, DenoState, EngineLifecycleStatus, StartupMode, ColdRetention, QueueStatus, TransferSettings } from "./types";
 
 const emptyStats: Stats = {
   total_downloaded_bytes: 0, total_uploaded_bytes: 0,
@@ -19,6 +19,8 @@ export default function App() {
   const [tasks, setTasks] = useState<Download[]>([]);
   const [stats, setStats] = useState<Stats>(emptyStats);
   const [queue, setQueue] = useState<QueueStatus | null>(null);
+  const [transferSettings, setTransferSettings] = useState<TransferSettings | null>(null);
+  const [transferDraft, setTransferDraft] = useState<TransferSettings | null>(null);
   const [daily, setDaily] = useState<DailyTransfer[]>([]);
   const [engine, setEngine] = useState<EngineState | null>(null);
   const [deno, setDeno] = useState<DenoState | null>(null);
@@ -42,13 +44,14 @@ export default function App() {
     localStorage.setItem(accentKey, accent);
   }, [theme, accent]);
   const refresh = useCallback(async () => {
-    const [downloadList, summary, state, days, denoState, lifecycleStatus, queueStatus] = await Promise.all([
+    const [downloadList, summary, state, days, denoState, lifecycleStatus, queueStatus, transferPolicy] = await Promise.all([
       api<Download[]>("/downloads", token), api<Stats>("/stats", token),
       api<EngineState>("/engines/yt-dlp", token),
       api<DailyTransfer[]>("/stats/daily", token),
       api<DenoState>("/runtimes/deno", token),
       api<EngineLifecycleStatus>("/engines/lifecycle", token),
-      api<QueueStatus>("/queue", token)
+      api<QueueStatus>("/queue", token),
+      api<TransferSettings>("/queue/settings", token)
     ]);
     setTasks(downloadList);
     setStats(summary);
@@ -57,6 +60,8 @@ export default function App() {
     setDeno(denoState);
     setLifecycle(lifecycleStatus);
     setQueue(queueStatus);
+    setTransferSettings(transferPolicy);
+    setTransferDraft(previous => previous ?? transferPolicy);
     setLastUpdated(new Date().toLocaleTimeString());
     setError("");
   }, [token]);
@@ -332,6 +337,66 @@ export default function App() {
             </div>
           </div>
           <div className="version-note">Fallback: {deno?.fallback ?? "—"} · Installed: {deno?.installed.join(", ") || "none"}</div>
+        </section>
+        <section className="panel">
+          <div className="panel-head"><div><h2>Concurrency &amp; speed limits</h2>
+            <p>Live controls for active torrent traffic and future yt-dlp tasks.</p></div>
+          </div>
+          <div className="version-grid">
+            <label>Parallel downloads (1–32)
+              <input type="number" min={1} max={32} step={1}
+                disabled={busy || !transferDraft} value={transferDraft?.concurrency ?? 2}
+                onChange={event => setTransferDraft(current => current ? {
+                  ...current, concurrency: Number(event.target.value)
+                } : null)} />
+            </label>
+            <label>yt-dlp download (KiB/s, 0 = unlimited)
+              <input type="number" min={0} max={976562} step={1}
+                disabled={busy || !transferDraft}
+                value={Math.round((transferDraft?.yt_dlp_download_bps ?? 0) / 1024)}
+                onChange={event => setTransferDraft(current => current ? {
+                  ...current, yt_dlp_download_bps: Number(event.target.value) > 0
+                    ? Number(event.target.value) * 1024 : null
+                } : null)} />
+            </label>
+            <label>BitTorrent download (KiB/s, 0 = unlimited)
+              <input type="number" min={0} max={4194303} step={1}
+                disabled={busy || !transferDraft}
+                value={Math.round((transferDraft?.torrent_download_bps ?? 0) / 1024)}
+                onChange={event => setTransferDraft(current => current ? {
+                  ...current, torrent_download_bps: Number(event.target.value) > 0
+                    ? Number(event.target.value) * 1024 : null
+                } : null)} />
+            </label>
+            <label>BitTorrent upload (KiB/s, 0 = unlimited)
+              <input type="number" min={0} max={4194303} step={1}
+                disabled={busy || !transferDraft}
+                value={Math.round((transferDraft?.torrent_upload_bps ?? 0) / 1024)}
+                onChange={event => setTransferDraft(current => current ? {
+                  ...current, torrent_upload_bps: Number(event.target.value) > 0
+                    ? Number(event.target.value) * 1024 : null
+                } : null)} />
+            </label>
+            <div className="version-actions">
+              <button className="button primary" disabled={busy || !transferDraft || !Number.isInteger(transferDraft.concurrency)}
+                onClick={() => void operation(async () => {
+                  const saved = await api<TransferSettings>("/queue/settings", token, {
+                    method: "PUT",
+                    headers: {"Content-Type": "application/json"},
+                    body: JSON.stringify(transferDraft)
+                  });
+                  setTransferSettings(saved);
+                  setTransferDraft(saved);
+                })}>Apply live limits</button>
+              <button className="button secondary" disabled={busy || !transferSettings}
+                onClick={() => setTransferDraft(transferSettings)}>Discard edits</button>
+            </div>
+          </div>
+          <p className="version-note">
+            Changes persist after restart. Lowering parallelism does not interrupt running tasks.
+            Torrent limits apply immediately to the shared session (minimum 64 KiB/s).
+            yt-dlp limits apply to newly started jobs (minimum 1 KiB/s), not existing subprocesses.
+          </p>
         </section>
         <section className="panel">
           <div className="panel-head"><div><h2>Engine runtime</h2>

@@ -9,7 +9,7 @@ use axum::{
 };
 use kordra_core::{DailyTransfer, Database, Download, EngineTransfer, NewDownload, Statistics};
 use kordra_engine_manager::{Channel, DenoManager, DenoState, VersionState, YtDlpManager};
-use kordra_worker::{EngineLifecyclePolicy, Worker};
+use kordra_worker::{EngineLifecyclePolicy, TransferSettings, Worker};
 use serde::{Deserialize, Serialize};
 use subtle::ConstantTimeEq;
 
@@ -50,6 +50,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/engines/lifecycle", get(engine_lifecycle).put(set_engine_lifecycle))
         .route("/engines/{id}/prepare", post(prepare_engine))
         .route("/queue", get(queue_status))
+        .route("/queue/settings", get(get_transfer_settings).put(set_transfer_settings))
         .route("/stats", get(stats))
         .route("/stats/daily", get(daily_stats))
         .route("/stats/engines", get(engine_stats))
@@ -180,6 +181,13 @@ async fn capabilities() -> Json<serde_json::Value> {
             {"id":"librqbit","name":"librqbit","installed":"embedded","sources":["magnet","http","https"],"capabilities":["download","seed","transfer_stats"]}
         ]
     }))
+}
+async fn get_transfer_settings(State(state): State<ApiState>) -> Json<TransferSettings> {
+    Json(state.worker.transfer_settings().await)
+}
+async fn set_transfer_settings(State(state): State<ApiState>, Json(value): Json<TransferSettings>)
+    -> ApiResult<Json<TransferSettings>> {
+    state.worker.set_transfer_settings(value).await.map(Json).map_err(invalid)
 }
 async fn queue_status(State(state): State<ApiState>) -> ApiResult<Json<serde_json::Value>> {
     state.worker.queue_status().await.map(Json).map_err(internal)

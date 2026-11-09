@@ -1,13 +1,16 @@
 //! First real task executor: yt-dlp as a managed child process (no shell).
 //! Cancellation of CLI jobs is supported; full process-tree supervision remains planned.
 mod lifecycle;
+mod transfer_settings;
 pub use lifecycle::{ColdRetention, EngineLifecyclePolicy, PolicyStore, StartupMode};
+pub use transfer_settings::{TransferSettings, TransferStore};
+use transfer_settings::LiveSlots;
 use anyhow::{bail, Context, Result};
 use kordra_core::{Database, Download};
 use kordra_engine_manager::{DenoManager, YtDlpManager};
 use kordra_torrent::TorrentEngine;
 use std::{collections::{HashMap, HashSet}, path::PathBuf, process::Stdio, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
-use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command, sync::{Mutex, Notify, Semaphore}};
+use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command, sync::{Mutex, Notify}};
 use tokio_util::sync::CancellationToken;
 
 #[derive(Clone)]
@@ -22,25 +25,40 @@ pub struct Worker {
     restoring_seeds: Arc<Mutex<HashSet<String>>>,
     queue_notify: Arc<Notify>,
     queue_started: Arc<AtomicBool>,
-    worker_count: usize,
-    limit: Arc<Semaphore>,
+    transfer: TransferStore,
+    slots: LiveSlots,
 }
 impl Worker {
-    pub fn new(db: Database, manager: YtDlpManager, deno: DenoManager, downloads: PathBuf, lifecycle: PolicyStore, concurrency: usize) -> Self {
-        let worker_count = concurrency.clamp(1, 32);
+    pub async fn new(db: Database, manager: YtDlpManager, deno: DenoManager, downloads: PathBuf,
+        lifecycle: PolicyStore, transfer: TransferStore) -> Self {
+        let settings = transfer.get().await;
         Self { db, manager, deno, torrents: TorrentEngine::new(downloads.clone()), downloads,
             lifecycle, running_cli: Arc::new(Mutex::new(HashMap::new())),
             restoring_seeds: Arc::new(Mutex::new(HashSet::new())),
             queue_notify: Arc::new(Notify::new()), queue_started: Arc::new(AtomicBool::new(false)),
-            worker_count, limit: Arc::new(Semaphore::new(worker_count)) }
+            transfer, slots: LiveSlots::new(settings.concurrency) }
     }
     pub async fn queue_status(&self) -> Result<serde_json::Value> {
         let (queued, running, paused) = self.db.queue_counts().await?;
         Ok(serde_json::json!({
             "queued":queued, "running":running, "paused":paused,
-            "max_concurrent":self.worker_count,
-            "available_slots":self.limit.available_permits()
+            "max_concurrent":self.slots.limit(),
+            "available_slots":self.slots.available(),
+            "occupied_slots":self.slots.active()
         }))
+    }
+    pub async fn transfer_settings(&self) -> TransferSettings { self.transfer.get().await }
+    pub async fn apply_transfer_settings(&self) -> Result<()> {
+        let settings = self.transfer.get().await;
+        self.torrents.set_rate_limits(settings.torrent_download_bps,
+            settings.torrent_upload_bps).await;
+        self.slots.set_limit(settings.concurrency);
+        Ok(())
+    }
+    pub async fn set_transfer_settings(&self, settings: TransferSettings) -> Result<TransferSettings> {
+        self.transfer.save(settings).await?;
+        self.apply_transfer_settings().await?;
+        Ok(settings)
     }
     pub async fn lifecycle_policy(&self) -> EngineLifecyclePolicy { self.lifecycle.get().await }
     pub async fn lifecycle_status(&self) -> Result<serde_json::Value> {
@@ -146,10 +164,7 @@ impl Worker {
             let wake = self.queue_notify.notified();
             tokio::pin!(wake);
             wake.as_mut().enable();
-            let _permit = match self.limit.acquire().await {
-                Ok(permit) => permit,
-                Err(_) => return,
-            };
+            let permit = self.slots.acquire().await;
             match self.db.claim_next().await {
                 Ok(Some(task)) => {
                     let id = task.id.clone();
@@ -158,12 +173,12 @@ impl Worker {
                     }
                 }
                 Ok(None) => {
-                    drop(_permit);
+                    drop(permit);
                     wake.await;
                 }
                 Err(error) => {
                     tracing::error!("could not claim queued download: {error:#}");
-                    drop(_permit);
+                    drop(permit);
                     tokio::time::sleep(Duration::from_secs(1)).await;
                 }
             }
@@ -313,7 +328,7 @@ impl Worker {
             tokio::spawn(async move {
                 let id = item.id.clone();
                 let result = async {
-                    let _permit = this.limit.acquire().await?;
+                    let _permit = this.slots.acquire().await;
                     if !this.db.torrent_preferences(&id).await?.is_some_and(|p| p.seed_enabled) {
                         return Ok(());
                     }
@@ -332,7 +347,9 @@ impl Worker {
     /// directly from the persistent database. Can be called multiple times.
     pub async fn enqueue_pending(&self) -> Result<()> {
         if !self.queue_started.swap(true, Ordering::AcqRel) {
-            for _ in 0..self.worker_count {
+            // Bounded 32 Tokio dispatcher tasks regardless of backlog size.
+            // LiveSlots gates the effective number of active transfers.
+            for _ in 0..32 {
                 let this = self.clone();
                 tokio::spawn(async move { this.queue_worker_loop().await; });
             }
@@ -416,6 +433,9 @@ impl Worker {
         Ok(())
     }
     async fn run_ytdlp(&self, task: Download, cancellation: CancellationToken) -> Result<()> {
+        // yt-dlp has no persistent RPC control. New tasks take a snapshot of
+        // the current limit; running CLI processes keep their existing rate.
+        let download_limit = self.transfer.get().await.yt_dlp_download_bps;
         let binary = tokio::select! {
             result = self.manager.ensure_active() => result?,
             _ = cancellation.cancelled() => {
@@ -425,6 +445,9 @@ impl Worker {
         };
         tokio::fs::create_dir_all(&self.downloads).await?;
         let mut command = Command::new(binary);
+        if let Some(limit) = download_limit {
+            command.arg("--limit-rate").arg(limit.to_string());
+        }
         if youtube_url(&task.source) {
             let deno = tokio::select! {
                 result = self.deno.ensure_active() => result.context("installing Deno required for YouTube")?,
