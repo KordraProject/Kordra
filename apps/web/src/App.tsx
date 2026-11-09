@@ -171,11 +171,29 @@ export default function App() {
               onChange={event => setSearch(event.target.value)} />
           </div>
           <div className="table-wrap"><table><thead><tr>
-            <th>Source</th><th>Engine</th><th>State</th><th>Progress</th><th>Received / Upload</th><th>Controls</th>
+            <th>Source</th><th>Engine</th><th>State</th><th>Priority</th><th>Progress</th><th>Received / Upload</th><th>Controls</th>
           </tr></thead><tbody>
             {visible.map(task => <tr key={task.id}>
               <td><span className="source-cell" title={task.source}>{task.source}</span>{task.error && <small className="error-text">{task.error}</small>}</td>
               <td>{task.engine}</td><td><span className={`status ${task.status}`}>{task.status}</span></td>
+              <td>
+                <select aria-label={`Priority of ${task.id}`} className="queue-priority"
+                  value={task.priority ?? 0}
+                  disabled={busy || !["queued", "paused"].includes(task.status)}
+                  onChange={event => void operation(() => api<Download>(
+                    `/downloads/${task.id}/priority`, token, {
+                      method: "PUT",
+                      headers: { "Content-Type": "application/json" },
+                      body: JSON.stringify({ priority: Number(event.target.value) })
+                    }
+                  ))}>
+                  <option value={2}>Very high</option>
+                  <option value={1}>High</option>
+                  <option value={0}>Normal</option>
+                  <option value={-1}>Low</option>
+                  <option value={-2}>Very low</option>
+                </select>
+              </td>
               <td>{task.total_bytes > 0 ? <div className="task-progress">
                 <span>{(Math.min(100, 100 * task.downloaded_bytes / task.total_bytes)).toFixed(1)}%</span>
                 <div className="task-bar"><div style={{width: `${Math.min(100, 100 * task.downloaded_bytes / task.total_bytes)}%`}} /></div>
@@ -203,7 +221,7 @@ export default function App() {
                     })}>Details</button>}
               </td>
             </tr>)}
-            {!visible.length && <tr><td colSpan={6} className="empty">No matching downloads yet.</td></tr>}
+            {!visible.length && <tr><td colSpan={7} className="empty">No matching downloads yet.</td></tr>}
           </tbody></table></div>
         </section>
         {selectedTorrent && <section className="panel torrent-details">

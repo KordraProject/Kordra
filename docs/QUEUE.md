@@ -37,6 +37,10 @@ SQLite stores file selection and whether a completed torrent should keep seeding
 
 ## Dispatcher, cancellation and wakeups
 
-The durable SQLite table is the **single source of truth** for pending downloads. At startup Kordra creates at most `KORDRA_CONCURRENCY` queue dispatchers, instead of a task for every queued item. Each dispatcher obtains a semaphore slot and performs one atomic `UPDATE … RETURNING` claim of the oldest queued row. When the queue is empty it waits on `tokio::sync::Notify`; on create, resume or retry the API only sends a wake-up. This ensures no work is scheduled twice even when multiple dispatchers race.
+The durable SQLite table is the **single source of truth** for pending downloads. At startup Kordra creates at most `KORDRA_CONCURRENCY` queue dispatchers, instead of a task for every queued item. Each dispatcher obtains a semaphore slot and performs one atomic `UPDATE … RETURNING` claim of the highest-priority queued row (FIFO among tasks with equal priority). When the queue is empty it waits on `tokio::sync::Notify`; on create, resume or retry the API only sends a wake-up. This ensures no work is scheduled twice even when multiple dispatchers race.
 
 The yt-dlp registration and cancellation paths now take the same token-map mutex while inspecting or changing the SQLite state. A cancellation immediately after a dispatcher claims a task is persisted as `cancelling` and detected before the subprocess starts. Attempt counters increase only on an actual claim. `GET /api/v1/queue` and `kordra-cli queue` report queued, running, paused, maximum concurrent and available slots.
+
+## Task priorities
+
+A queued or paused task has a durable SQLite priority level: -2 Very low, -1 Low, 0 Normal (default), 1 High, 2 Very high. Higher priorities are claimed first; equal priorities remain FIFO by creation time and task ID. Change priority using the one queue's dropdown, `PUT /api/v1/downloads/{id}/priority` with `{"priority":1}`, or `kordra-cli set-priority <id> 1`. Changing priority does not preempt a running download or evict one already occupying a slot. The queued priority level persists across daemon restarts. The queue has an index on status/priority/creation time to keep claims responsive even with large SQLite backlogs.

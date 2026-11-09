@@ -8,6 +8,7 @@ export type Download = {
   uploaded_bytes: number;
   total_bytes: number;
   attempts: number;
+  priority: number;
   error: string | null;
   created_at: string;
   updated_at: string;

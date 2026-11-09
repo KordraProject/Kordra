@@ -155,3 +155,5 @@ footer { color: var(--muted); font-size: 12px; padding: 12px 0 26px; }
   .torrent-file { flex-wrap: wrap; }
   .torrent-file-size { width: 100%; margin-left: 26px; }
 }
+
+.queue-priority { min-width: 98px; max-width: 120px; padding: 6px 8px; font-size: 12px; }

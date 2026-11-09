@@ -43,6 +43,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/downloads/{id}/torrent/files", post(select_torrent_files))
         .route("/downloads/{id}/resume", post(resume_download))
         .route("/downloads/{id}/retry", post(retry_download))
+        .route("/downloads/{id}/priority", axum::routing::put(set_download_priority))
         .route("/downloads/{id}/cancel", post(cancel_download))
         .route("/downloads/{id}/stop-seeding", post(stop_seeding))
         .route("/engines/capabilities", get(capabilities))
@@ -137,6 +138,17 @@ async fn cancel_download(Path(id): Path<String>, State(state): State<ApiState>) 
     state.worker.cancel(&id).await.map(Json).map_err(|error| {
         (StatusCode::CONFLICT, Json(ErrorBody { error: error.to_string() }))
     })
+}
+#[derive(Deserialize)]
+struct PriorityChange { priority: i64 }
+async fn set_download_priority(Path(id): Path<String>, State(state): State<ApiState>,
+    Json(req): Json<PriorityChange>) -> ApiResult<Json<Download>> {
+    match state.db.set_priority(&id, req.priority).await.map_err(invalid)? {
+        Some(task) => Ok(Json(task)),
+        None => Err((StatusCode::CONFLICT, Json(ErrorBody {
+            error: "task does not exist or is no longer queued/paused".into()
+        })))
+    }
 }
 async fn retry_download(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<Download>> {
     state.worker.retry(&id).await.map(Json).map_err(|error| {

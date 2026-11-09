@@ -16,6 +16,7 @@ enum Operation {
     Health,
     Stats,
     Queue,
+    SetPriority { id: String, priority: i64 },
     List,
     Add { source: String, #[arg(long, default_value = "yt-dlp")] engine: String },
     EngineState,
@@ -45,6 +46,8 @@ async fn main() -> Result<()> {
         Operation::Health => (false, "/health".into(), None),
         Operation::Stats => (false, "/stats".into(), None),
         Operation::Queue => (false, "/queue".into(), None),
+        Operation::SetPriority { id, priority } => (true, format!("/downloads/{id}/priority"),
+            Some(serde_json::json!({"priority":priority}))),
         Operation::List => (false, "/downloads".into(), None),
         Operation::Add { source, engine } =>
             (true, "/downloads".into(), Some(serde_json::json!({"source":source,"engine":engine}))),
@@ -71,7 +74,9 @@ async fn main() -> Result<()> {
         Operation::StopSeeding { id } => (true, format!("/downloads/{id}/stop-seeding"), None),
     };
     let client = reqwest::Client::new();
-    let request = if route == "/engines/lifecycle" && post { client.put(format!("{url}{route}")) }
+    let request = if post && (route == "/engines/lifecycle" || route.ends_with("/priority")) {
+        client.put(format!("{url}{route}"))
+    }
         else if post { client.post(format!("{url}{route}")) } else { client.get(format!("{url}{route}")) };
     let request = if let Some(token) = opts.token { request.bearer_auth(token) } else { request };
     let request = if let Some(body) = body { request.json(&body) } else { request };
