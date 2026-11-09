@@ -52,6 +52,17 @@ pub struct EngineTransfer {
     pub completed_tasks: i64,
 }
 
+#[derive(Debug, Clone, Serialize, Deserialize, PartialEq, Eq)]
+pub struct TorrentPreferences {
+    /// On restart, seed completed torrents in hot or cold/persistent mode.
+    pub seed_enabled: bool,
+    /// None means download all files.
+    pub only_files: Option<Vec<usize>>,
+}
+impl Default for TorrentPreferences {
+    fn default() -> Self { Self { seed_enabled: true, only_files: None } }
+}
+
 impl Database {
     pub async fn open(data_dir: &Path) -> Result<Self> {
         tokio::fs::create_dir_all(data_dir).await?;
@@ -93,8 +104,14 @@ impl Database {
             sqlx::query("ALTER TABLE daily_transfers ADD COLUMN uploaded_bytes INTEGER NOT NULL DEFAULT 0")
                 .execute(&pool).await?;
         }
-        // Tasks interrupted by previous process termination are not silently retried.
-        sqlx::query("UPDATE downloads SET status = 'interrupted', updated_at = ? WHERE status = 'running'")
+        sqlx::query(r#"CREATE TABLE IF NOT EXISTS torrent_preferences (
+            task_id TEXT PRIMARY KEY REFERENCES downloads(id) ON DELETE CASCADE,
+            seed_enabled INTEGER NOT NULL DEFAULT 1 CHECK(seed_enabled IN (0, 1)),
+            only_files TEXT
+        )"#).execute(&pool).await?;
+        // Neither a running download nor a pending cancellation can remain active
+        // inside this *new* process. Both need explicit recovery after a crash.
+        sqlx::query("UPDATE downloads SET status = 'interrupted', updated_at = ? WHERE status IN ('running', 'cancelling')")
             .bind(Utc::now().to_rfc3339()).execute(&pool).await?;
         Ok(Self { pool })
     }
@@ -104,6 +121,58 @@ impl Database {
             .fetch_all(&self.pool).await?)
     }
     /// Retrieve the entire startup backlog in FIFO order, not only the last 500 UI rows.
+    pub async fn completed_torrents_to_seed(&self) -> Result<Vec<Download>> {
+        Ok(sqlx::query_as::<_, Download>(r#"
+            SELECT d.* FROM downloads AS d
+            LEFT JOIN torrent_preferences AS p ON p.task_id = d.id
+            WHERE d.engine = 'librqbit' AND d.status = 'completed'
+              AND COALESCE(p.seed_enabled, 1) = 1
+            ORDER BY d.created_at ASC, d.id ASC
+        "#).fetch_all(&self.pool).await?)
+    }
+    /// Returns None for an unknown or non-torrent task.
+    pub async fn torrent_preferences(&self, id: &str) -> Result<Option<TorrentPreferences>> {
+        let row = sqlx::query(r#"
+            SELECT p.seed_enabled, p.only_files FROM downloads AS d
+            LEFT JOIN torrent_preferences AS p ON p.task_id = d.id
+            WHERE d.id = ? AND d.engine = 'librqbit'
+        "#).bind(id).fetch_optional(&self.pool).await?;
+        use sqlx::Row;
+        row.map(|r| {
+            let seed_enabled: Option<i64> = r.try_get(0)?;
+            let selection: Option<String> = r.try_get(1)?;
+            Ok(TorrentPreferences {
+                seed_enabled: seed_enabled.unwrap_or(1) != 0,
+                only_files: selection.map(|raw| serde_json::from_str::<Vec<usize>>(&raw))
+                    .transpose()?,
+            })
+        }).transpose()
+    }
+    /// Store an active torrent's file selection; never accepts an empty selection.
+    pub async fn save_torrent_selection(&self, id: &str, only_files: &[usize]) -> Result<()> {
+        if only_files.is_empty() || only_files.len() > 10_000 {
+            bail!("invalid torrent file selection");
+        }
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT OR IGNORE INTO torrent_preferences(task_id) SELECT id FROM downloads WHERE id = ? AND engine = 'librqbit'")
+            .bind(id).execute(&mut *tx).await?;
+        let updated = sqlx::query("UPDATE torrent_preferences SET only_files = ? WHERE task_id = ?")
+            .bind(serde_json::to_string(only_files)?).bind(id)
+            .execute(&mut *tx).await?;
+        if updated.rows_affected() != 1 { bail!("torrent not found"); }
+        tx.commit().await?;
+        Ok(())
+    }
+    /// Persistently disable automatic seeding of a completed torrent.
+    pub async fn disable_torrent_seeding(&self, id: &str) -> Result<bool> {
+        let mut tx = self.pool.begin().await?;
+        sqlx::query("INSERT OR IGNORE INTO torrent_preferences(task_id) SELECT id FROM downloads WHERE id = ? AND engine = 'librqbit' AND status = 'completed'")
+            .bind(id).execute(&mut *tx).await?;
+        let updated = sqlx::query("UPDATE torrent_preferences SET seed_enabled = 0 WHERE task_id = ? AND seed_enabled = 1")
+            .bind(id).execute(&mut *tx).await?;
+        tx.commit().await?;
+        Ok(updated.rows_affected() == 1)
+    }
     pub async fn list_queued(&self) -> Result<Vec<Download>> {
         Ok(sqlx::query_as::<_, Download>(
             "SELECT * FROM downloads WHERE status = 'queued' ORDER BY created_at ASC, id ASC"
@@ -251,6 +320,45 @@ mod tests {
         assert_eq!(db.daily_stats().await.unwrap()[0].uploaded_bytes, 250);
         assert_eq!(db.engine_stats().await.unwrap()[0].completed_tasks, 1);
         drop(db);
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+
+    #[tokio::test]
+    async fn torrent_preferences_survive_restarts_and_filter_seed_candidates() {
+        let dir = std::env::temp_dir().join(format!("kordra-torrent-prefs-{}", Uuid::new_v4()));
+        let db = Database::open(&dir).await.unwrap();
+        let a = db.create(NewDownload { source: "magnet:?xt=urn:btih:aaa".into(), engine: "librqbit".into() }).await.unwrap();
+        let b = db.create(NewDownload { source: "magnet:?xt=urn:btih:bbb".into(), engine: "librqbit".into() }).await.unwrap();
+        assert_eq!(db.torrent_preferences(&a.id).await.unwrap().unwrap(), TorrentPreferences::default());
+        assert!(db.set_running(&a.id).await.unwrap());
+        assert!(db.set_running(&b.id).await.unwrap());
+        db.finish(&a.id, true, None).await.unwrap();
+        db.finish(&b.id, true, None).await.unwrap();
+        db.save_torrent_selection(&a.id, &[0, 2, 4]).await.unwrap();
+        assert!(db.disable_torrent_seeding(&b.id).await.unwrap());
+        assert!(!db.disable_torrent_seeding(&b.id).await.unwrap());
+        assert_eq!(db.completed_torrents_to_seed().await.unwrap().len(), 1);
+        drop(db);
+        let reopened = Database::open(&dir).await.unwrap();
+        assert_eq!(reopened.completed_torrents_to_seed().await.unwrap()[0].id, a.id);
+        assert_eq!(reopened.torrent_preferences(&a.id).await.unwrap().unwrap().only_files, Some(vec![0, 2, 4]));
+        assert!(!reopened.torrent_preferences(&b.id).await.unwrap().unwrap().seed_enabled);
+        assert!(reopened.save_torrent_selection("unknown", &[0]).await.is_err());
+        drop(reopened);
+        let _ = tokio::fs::remove_dir_all(dir).await;
+    }
+
+    #[tokio::test]
+    async fn pending_cancellation_becomes_interrupted_on_restart() {
+        let dir = std::env::temp_dir().join(format!("kordra-cancelling-{}", Uuid::new_v4()));
+        let db = Database::open(&dir).await.unwrap();
+        let item = db.create(NewDownload { source: "https://example.org/test".into(), engine: "yt-dlp".into() }).await.unwrap();
+        assert!(db.set_running(&item.id).await.unwrap());
+        assert!(db.transition(&item.id, "running", "cancelling").await.unwrap());
+        drop(db);
+        let reopened = Database::open(&dir).await.unwrap();
+        assert_eq!(reopened.get(&item.id).await.unwrap().unwrap().status, "interrupted");
+        drop(reopened);
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
 
