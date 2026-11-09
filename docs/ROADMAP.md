@@ -10,7 +10,8 @@
 - [ ] Verify Web build and Docker CI on GitHub; fix failures.
 - [ ] General engine catalog: Deno/FFmpeg, aria2c, gallery-dl, rclone.
 - [x] Basic embedded librqbit downloads, upload accounting and unified queue (GitHub CI verification pending).
-- [ ] Full librqbit management, persistence and file/tracker controls; libtorrent helper.
+- [x] Initial durable torrent file selection and seeding preference, completed torrent reattach after restart (pre-alpha).
+- [ ] Full metadata/fastresume and advanced tracker controls, live torrent integration tests, libtorrent helper.
 - [x] Hot/cold startup modes and temporary/persistent cold retention for embedded librqbit, CLI adapter readiness and Web/API/CLI controls.\n- [ ] Full per-engine resource policies, cancellation, resume and process-tree supervision.\n- [ ] Queue scheduling, pause/retry/resume, cancellation and full process-tree isolation.
 - [ ] WebSocket events and detailed transfer histories.
 - [ ] UI drag/drop editable layouts, advanced themes and i18n.

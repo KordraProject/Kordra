@@ -30,3 +30,7 @@ The first implementation relies on native yt-dlp partial-file resume and librqbi
 - Successful cancellation is not recorded as a failed download. `cancelled` is terminal; re-adding the source creates a new task.
 
 Startup scans **all** queued tasks in creation order instead of silently ignoring any beyond the 500 most recently shown in the Web UI. The initial scheduler still spawns a waiting future per queued task; bounded-memory, priority-aware scheduling remains planned. Cancelling a yt-dlp subprocess currently stops only the direct child, not its complete process tree. Full Windows Job Object and Unix process-group management is still required.
+
+## Durable BitTorrent preferences
+
+SQLite stores file selection and whether a completed torrent should keep seeding. On startup, Kordra repairs jobs caught in `cancelling` to `interrupted`, allowing an explicit retry instead of leaving them permanently stuck. In hot and cold/persistent modes, completed torrents with seeding enabled are reattached to librqbit using existing files. Cold/temporary mode forgets completed torrents from the embedded session without deleting files, rather than merely removing Kordra's in-memory handle.

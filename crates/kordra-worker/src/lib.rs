@@ -241,7 +241,7 @@ impl Worker {
                 let result = async {
                     let _permit = this.limit.acquire().await?;
                     if !this.db.torrent_preferences(&id).await?.is_some_and(|p| p.seed_enabled) {
-                        return Ok(()) as Result<()>;
+                        return Ok(());
                     }
                     if this.torrents.has_task(&id).await { return Ok(()); }
                     this.run_torrent(item).await
