@@ -48,6 +48,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/engines/capabilities", get(capabilities))
         .route("/engines/lifecycle", get(engine_lifecycle).put(set_engine_lifecycle))
         .route("/engines/{id}/prepare", post(prepare_engine))
+        .route("/queue", get(queue_status))
         .route("/stats", get(stats))
         .route("/stats/daily", get(daily_stats))
         .route("/stats/engines", get(engine_stats))
@@ -167,6 +168,9 @@ async fn capabilities() -> Json<serde_json::Value> {
             {"id":"librqbit","name":"librqbit","installed":"embedded","sources":["magnet","http","https"],"capabilities":["download","seed","transfer_stats"]}
         ]
     }))
+}
+async fn queue_status(State(state): State<ApiState>) -> ApiResult<Json<serde_json::Value>> {
+    state.worker.queue_status().await.map(Json).map_err(internal)
 }
 async fn stats(State(state): State<ApiState>) -> ApiResult<Json<Statistics>> {
     state.db.stats().await.map(Json).map_err(internal)

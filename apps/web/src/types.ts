@@ -72,3 +72,11 @@ export type EngineLifecycleStatus = {
     persistent_process_supported?: boolean;
   }>;
 };
+
+export type QueueStatus = {
+  queued: number;
+  running: number;
+  paused: number;
+  max_concurrent: number;
+  available_slots: number;
+};

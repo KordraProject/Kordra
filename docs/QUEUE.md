@@ -29,8 +29,14 @@ The first implementation relies on native yt-dlp partial-file resume and librqbi
 - Completed/seeding torrents can stop seeding without changing their completed status via the separate stop-seeding endpoint.
 - Successful cancellation is not recorded as a failed download. `cancelled` is terminal; re-adding the source creates a new task.
 
-Startup scans **all** queued tasks in creation order instead of silently ignoring any beyond the 500 most recently shown in the Web UI. The initial scheduler still spawns a waiting future per queued task; bounded-memory, priority-aware scheduling remains planned. Cancelling a yt-dlp subprocess currently stops only the direct child, not its complete process tree. Full Windows Job Object and Unix process-group management is still required.
+Startup uses a fixed-size Tokio dispatcher that **atomically claims** queued tasks from SQLite in FIFO order. It does not allocate one task/future per backlog entry, so thousands of queued downloads consume bounded scheduler memory. The UI still shows the 500 newest tasks, but `GET /api/v1/queue` shows actual global counts. Concurrency is configurable through `KORDRA_CONCURRENCY` (1–32; default 2). Priority scheduling, rate limits and live concurrency reconfiguration remain planned. Cancelling a yt-dlp subprocess currently stops only the direct child, not its complete process tree. Full Windows Job Object and Unix process-group management is still required.
 
 ## Durable BitTorrent preferences
 
 SQLite stores file selection and whether a completed torrent should keep seeding. On startup, Kordra repairs jobs caught in `cancelling` to `interrupted`, allowing an explicit retry instead of leaving them permanently stuck. In hot and cold/persistent modes, completed torrents with seeding enabled are reattached to librqbit using existing files. Cold/temporary mode forgets completed torrents from the embedded session without deleting files, rather than merely removing Kordra's in-memory handle.
+
+## Dispatcher, cancellation and wakeups
+
+The durable SQLite table is the **single source of truth** for pending downloads. At startup Kordra creates at most `KORDRA_CONCURRENCY` queue dispatchers, instead of a task for every queued item. Each dispatcher obtains a semaphore slot and performs one atomic `UPDATE … RETURNING` claim of the oldest queued row. When the queue is empty it waits on `tokio::sync::Notify`; on create, resume or retry the API only sends a wake-up. This ensures no work is scheduled twice even when multiple dispatchers race.
+
+The yt-dlp registration and cancellation paths now take the same token-map mutex while inspecting or changing the SQLite state. A cancellation immediately after a dispatcher claims a task is persisted as `cancelling` and detected before the subprocess starts. Attempt counters increase only on an actual claim. `GET /api/v1/queue` and `kordra-cli queue` report queued, running, paused, maximum concurrent and available slots.

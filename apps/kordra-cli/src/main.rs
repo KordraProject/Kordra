@@ -15,6 +15,7 @@ struct Options {
 enum Operation {
     Health,
     Stats,
+    Queue,
     List,
     Add { source: String, #[arg(long, default_value = "yt-dlp")] engine: String },
     EngineState,
@@ -43,6 +44,7 @@ async fn main() -> Result<()> {
     let (post, route, body) = match opts.command {
         Operation::Health => (false, "/health".into(), None),
         Operation::Stats => (false, "/stats".into(), None),
+        Operation::Queue => (false, "/queue".into(), None),
         Operation::List => (false, "/downloads".into(), None),
         Operation::Add { source, engine } =>
             (true, "/downloads".into(), Some(serde_json::json!({"source":source,"engine":engine}))),

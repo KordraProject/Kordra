@@ -24,7 +24,12 @@ async fn main() -> Result<()> {
     let manager = YtDlpManager::new(data.clone())?;
     let deno = DenoManager::new(data.clone())?;
     let lifecycle = PolicyStore::open(data).await?;
-    let worker = Worker::new(db.clone(), manager.clone(), deno.clone(), downloads, lifecycle, 2);
+    let concurrency: usize = env::var("KORDRA_CONCURRENCY")
+        .unwrap_or_else(|_| "2".to_owned()).parse()?;
+    if !(1..=32).contains(&concurrency) {
+        bail!("KORDRA_CONCURRENCY must be in range 1..=32");
+    }
+    let worker = Worker::new(db.clone(), manager.clone(), deno.clone(), downloads, lifecycle, concurrency);
     worker.apply_startup_policy().await?;
     // Reattach successful torrents in persistent/hot mode without blocking the
     // API listener on tracker, metadata or disk validation.

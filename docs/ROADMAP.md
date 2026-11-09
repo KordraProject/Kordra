@@ -12,7 +12,10 @@
 - [x] Basic embedded librqbit downloads, upload accounting and unified queue (GitHub CI verification pending).
 - [x] Initial durable torrent file selection and seeding preference, completed torrent reattach after restart (pre-alpha).
 - [ ] Full metadata/fastresume and advanced tracker controls, live torrent integration tests, libtorrent helper.
-- [x] Hot/cold startup modes and temporary/persistent cold retention for embedded librqbit, CLI adapter readiness and Web/API/CLI controls.\n- [ ] Full per-engine resource policies, cancellation, resume and process-tree supervision.\n- [ ] Queue scheduling, pause/retry/resume, cancellation and full process-tree isolation.
+- [x] Hot/cold startup modes and temporary/persistent cold retention for embedded librqbit, CLI adapter readiness and Web/API/CLI controls.
+- [ ] Full per-engine resource policies, cancellation, resume and process-tree supervision.
+- [x] Fixed-size SQLite-backed queue dispatcher, atomic FIFO claim, cancellation handoff and queue status API.
+- [ ] Priority scheduling, rate limits, dynamic concurrency, full process-tree isolation.
 - [ ] WebSocket events and detailed transfer histories.
 - [ ] UI drag/drop editable layouts, advanced themes and i18n.
 - [ ] Tauri 2 desktop and installers for Windows/Linux (MSI/EXE/portable, deb/rpm/AppImage).

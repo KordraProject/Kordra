@@ -442,6 +442,7 @@ mod tests {
         let (queued, active, paused) = db.queue_counts().await.unwrap();
         assert_eq!((queued, active, paused), (0, 36, 0));
         assert!(db.claim_next().await.unwrap().is_none());
+        drop(db);
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
 
@@ -461,7 +462,8 @@ mod tests {
         let item = db.claim_next().await.unwrap().unwrap();
         assert_eq!(item.id, paused.id);
         assert_eq!(item.attempts, 1);
-        assert!(db.get(&cancelled.id).await.unwrap().unwrap().attempts == 0);
+        assert_eq!(db.get(&cancelled.id).await.unwrap().unwrap().attempts, 0);
+        drop(db);
         let _ = tokio::fs::remove_dir_all(dir).await;
     }
 
