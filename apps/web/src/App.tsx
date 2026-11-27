@@ -35,6 +35,7 @@ export default function App() {
   const [busy, setBusy] = useState(false);
   const [error, setError] = useState("");
   const [lastUpdated, setLastUpdated] = useState("");
+  const [connected, setConnected] = useState(false);
   const [page, setPage] = useState<Page>("downloads");
   const [addOpen, setAddOpen] = useState(false);
   const [selectedId, setSelectedId] = useState<string | null>(null);
@@ -67,13 +68,13 @@ export default function App() {
     setQueue(queueStatus);
     setTransferSettings(transferPolicy);
     setTransferDraft(previous => previous ?? transferPolicy);
-    setLastUpdated(new Date().toLocaleTimeString());
+    setLastUpdated(new Date().toLocaleTimeString()); setConnected(true);
   }, [token]);
   useEffect(() => {
     let active = true;
     async function poll() {
       try { await refresh(); } catch (reason) {
-        if (active) setError(reason instanceof Error ? reason.message : String(reason));
+        if (active) { setConnected(false); setError(reason instanceof Error ? reason.message : String(reason)); }
       }
     }
     void poll();
@@ -133,20 +134,20 @@ export default function App() {
   return <div className="workspace">
     <aside className="navigation">
       <div className="wordmark"><span className="mark"><Icon name="download"/></span><span>Kordra<small>Download manager</small></span></div>
-      <button className="new-task" onClick={() => setAddOpen(true)}><Icon name="plus"/> New download <kbd>Ctrl N</kbd></button>
+      <button aria-label="New download" className="new-task" onClick={() => setAddOpen(true)}><Icon name="plus"/> New download <kbd>Ctrl N</kbd></button>
       <div className="nav-label">Library</div>
       <nav aria-label="Downloads">
         {([["all","All downloads","list"],["active","Downloading","download"],["queued","Waiting","clock"],["paused","Paused","pause"],["completed","Completed","check"],["failed","Failed","alert"],["cancelled","Cancelled","x"]] as const).map(([id,label,icon]) =>
-          <button key={id} className={"nav-button "+(page==="downloads"&&filter===id?"chosen":"")} onClick={() => { nav("downloads"); setFilter(id); }}><Icon name={icon}/><span>{label}</span><small>{count(id)}</small></button>
+          <button key={id} aria-label={label} aria-current={page==="downloads"&&filter===id?"page":undefined} className={"nav-button "+(page==="downloads"&&filter===id?"chosen":"")} onClick={() => { nav("downloads"); setFilter(id); }}><Icon name={icon}/><span>{label}</span><small>{count(id)}</small></button>
         )}
       </nav>
       <div className="nav-label">Workspace</div>
       <nav aria-label="Workspace">
         {([["activity","Statistics","chart"],["engines","Engines","layers"],["settings","Settings","settings"]] as const).map(([id,label,icon]) =>
-          <button key={id} className={"nav-button "+(page===id?"chosen":"")} onClick={() => nav(id)}><Icon name={icon}/><span>{label}</span></button>
+          <button key={id} aria-label={label} aria-current={page===id?"page":undefined} className={"nav-button "+(page===id?"chosen":"")} onClick={() => nav(id)}><Icon name={icon}/><span>{label}</span></button>
         )}
       </nav>
-      <div className="nav-bottom"><button className="nav-button" onClick={() => setTheme(t => t==="dark"?"light":"dark")}><Icon name={theme==="dark"?"sun":"moon"}/><span>{theme==="dark"?"Light appearance":"Dark appearance"}</span></button><span className="build-label">KORDRA / PRE-ALPHA</span></div>
+      <div className="nav-bottom"><button aria-label="Toggle appearance" className="nav-button" onClick={() => setTheme(t => t==="dark"?"light":"dark")}><Icon name={theme==="dark"?"sun":"moon"}/><span>{theme==="dark"?"Light appearance":"Dark appearance"}</span></button><span className="build-label">KORDRA / PRE-ALPHA</span></div>
     </aside>
     <main className="main-work">
       <header className="workspace-header"><div><span className="crumb">Kordra / {page==="downloads"?"Library":"Workspace"}</span><h1>{page==="downloads"?({all:"All downloads",active:"Downloading",queued:"Waiting",paused:"Paused",completed:"Completed",failed:"Failed",cancelled:"Cancelled"}[filter]):({activity:"Statistics",engines:"Engines",settings:"Settings"}[page])}</h1></div>
@@ -309,7 +310,7 @@ export default function App() {
             {lifecycle?.engines.map(engine => <div key={engine.id} className="engine-runtime-item">
               <div><strong>{engine.id}</strong><span>{engine.kind.replaceAll("_", " ")} · {engine.ready ? "Ready" : "Not initialized"}</span></div>
               <button className="button secondary" disabled={busy || engine.ready}
-                onClick={() => void operation(() => post(`/engines/${engine.id}/prepare`, token))}>Prepare</button>
+                onClick={() => void operation(() => post(`/engines/${engine.id}/prepare`, token))}>{engine.kind==="external_cli"?"Check installation":"Prepare"}</button>
             </div>)}
           </div>
         </section>
@@ -395,7 +396,7 @@ export default function App() {
         </section>
 </>}
       </div>}
-      <footer className="statusbar"><span><i className={"connection-dot "+(!lastUpdated?"offline":"")}/>{lastUpdated?"Last sync "+lastUpdated:"Connecting"}</span><span>{queue?.running??0} running / {queue?.max_concurrent??2} slots</span><span>{queue?.queued??0} waiting</span><div className="status-spacer"/><span><Icon name="download"/> {prettyBytes(stats.total_downloaded_bytes)}</span><span><Icon name="upload"/> {prettyBytes(stats.total_uploaded_bytes)}</span></footer>
+      <footer className="statusbar"><span><i className={"connection-dot "+(!connected?"offline":"")}/>{connected?"Last sync "+lastUpdated:lastUpdated?"Disconnected":"Connecting"}</span><span>{queue?.running??0} running / {queue?.max_concurrent??2} slots</span><span>{queue?.queued??0} waiting</span><div className="status-spacer"/><span><Icon name="download"/> {prettyBytes(stats.total_downloaded_bytes)}</span><span><Icon name="upload"/> {prettyBytes(stats.total_uploaded_bytes)}</span></footer>
     </main>
     {page==="downloads"&&selected&&<aside className="inspector" aria-label="Download details"><div className="inspector-top"><span>Download details</span><button className="icon-button" aria-label="Close details" onClick={()=>{setSelectedId(null);setSelectedTorrent(null);}}><Icon name="x"/></button></div><div className="inspector-body">
       <div className="inspector-file"><span className="file-symbol"><Icon name="file"/></span><h2>{activeTorrent?selectedTorrent!.details.name||taskName(selected.source):taskName(selected.source)}</h2><span className={"task-state "+selected.status}><i/>{statusName(selected.status)}</span></div>

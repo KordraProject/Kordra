@@ -45,3 +45,13 @@ jobs:
         with:
           name: kordra-web-dist
           path: apps/web/dist/
+      - name: Install Chromium for UI verification
+        run: npx playwright install --with-deps chromium
+      - name: Browser interaction tests and screenshots
+        run: npm run test:e2e
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: kordra-ui-screenshots
+          path: apps/web/ui-screenshots/
+          if-no-files-found: warn
