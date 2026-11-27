@@ -192,9 +192,9 @@ impl Database {
     }
     pub async fn create(&self, req: NewDownload) -> Result<Download> {
         if req.source.trim().is_empty() || req.source.len() > 4096 { bail!("invalid source"); }
-        if req.engine != "yt-dlp" && req.engine != "librqbit" { bail!("engine is not implemented yet"); }
+        if !matches!(req.engine.as_str(), "yt-dlp" | "librqbit" | "aria2" | "gallery-dl") { bail!("engine is not implemented yet"); }
         let http = req.source.starts_with("https://") || req.source.starts_with("http://");
-        if (req.engine == "yt-dlp" && !http)
+        if (req.engine != "librqbit" && !http)
             || (req.engine == "librqbit" && !http && !req.source.starts_with("magnet:?")) {
             bail!("unsupported source for requested engine");
         }
