@@ -1,0 +1,43 @@
+name: Remove verified merged development branches
+on:
+  push:
+    branches: [main]
+    paths: ['.github/workflows/cleanup-merged-branches.yml']
+permissions:
+  contents: write
+  pull-requests: read
+jobs:
+  cleanup:
+    if: github.repository == 'KordraProject/Kordra' && github.ref == 'refs/heads/main'
+    runs-on: ubuntu-24.04
+    steps:
+      - name: Delete only explicitly approved, unchanged, merged branches
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        shell: bash
+        run: |
+          set -euo pipefail
+          while read -r name expected pr; do
+            [[ "$name" == feature/* ]]
+            # A squash merge need not preserve ancestry; the exact PR head
+            # SHA and successful merge into main are independently verified.
+            gh api "repos/$GITHUB_REPOSITORY/pulls/$pr" | jq -e --arg sha "$expected" '.merged == true and .base.ref == "main" and .head.sha == $sha' >/dev/null
+            current="$(gh api "repos/$GITHUB_REPOSITORY/git/ref/heads/$name" --jq .object.sha)"
+            if [[ "$current" != "$expected" ]]; then
+              echo "::warning::Skipping changed branch $name"
+              continue
+            fi
+            gh api --method DELETE "repos/$GITHUB_REPOSITORY/git/refs/heads/$name"
+            echo "Removed $name at $expected"
+          done <<'BRANCHES'
+          feature/cancellation-and-full-recovery 9b7888db7a669b5903718f83ac2fe169b559d6e9 8
+          feature/durable-torrent-preferences 4e16cc444b93585e5419a5089bf63e90164a0077 11
+          feature/live-concurrency-and-speed-limits 6ddd2a0b30c62dceaf8270708c90c9aef8c42955 14
+          feature/queue-priorities 2eafdb6796a56765aad2dd3cb759de67bed2d442 13
+          feature/retry-interrupted-tasks e8489091f0ae1ff00a875c1eb0e8f723be551e25 7
+          feature/sqlite-queue-dispatcher 728af137437c8eac26d227a4bd616dcc6dda4303 12
+          feature/torrent-file-selection 633f0315cacd16a7b12a86354680a25bbc9c6906 10
+          feature/torrent-forget-and-seeding-control 9b7888db7a669b5903718f83ac2fe169b559d6e9 8
+          feature/torrent-stop-seeding e55d3c2c4388367641850d9fdfe897039f7a72cf 9
+          feature/workspace-redesign f394d432d2af520268dad1499b2af0ed73b06f10 15
+          BRANCHES
