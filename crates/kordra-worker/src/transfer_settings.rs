@@ -2,7 +2,7 @@
 //! Only claimed/running tasks occupy a slot; queued SQLite rows need no Tokio task.
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
+use std::{path::PathBuf, sync::{Arc, Mutex as StdMutex}};
 use tokio::sync::{Mutex, Notify, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
@@ -139,8 +139,7 @@ pub struct LiveSlots {
     inner: Arc<SlotInner>,
 }
 struct SlotInner {
-    limit: AtomicUsize,
-    active: AtomicUsize,
+    state: StdMutex<(usize, usize)>,
     changed: Notify,
 }
 pub struct SlotPermit {
@@ -148,7 +147,7 @@ pub struct SlotPermit {
 }
 impl Drop for SlotPermit {
     fn drop(&mut self) {
-        self.inner.active.fetch_sub(1, Ordering::AcqRel);
+        { let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner()); state.1 -= 1; }
         self.inner.changed.notify_waiters();
     }
 }
@@ -156,35 +155,30 @@ impl LiveSlots {
     pub fn new(limit: usize) -> Self {
         assert!((1..=32).contains(&limit));
         Self { inner: Arc::new(SlotInner {
-            limit: AtomicUsize::new(limit),
-            active: AtomicUsize::new(0),
+            state: StdMutex::new((limit, 0)),
             changed: Notify::new()
         }) }
     }
     pub fn set_limit(&self, limit: usize) {
         assert!((1..=32).contains(&limit));
-        self.inner.limit.store(limit, Ordering::Release);
+        self.inner.state.lock().unwrap_or_else(|e| e.into_inner()).0 = limit;
         self.inner.changed.notify_waiters();
     }
-    pub fn active(&self) -> usize { self.inner.active.load(Ordering::Acquire) }
-    pub fn limit(&self) -> usize { self.inner.limit.load(Ordering::Acquire) }
-    pub fn available(&self) -> usize { self.limit().saturating_sub(self.active()) }
+    pub fn active(&self) -> usize { self.inner.state.lock().unwrap_or_else(|e| e.into_inner()).1 }
+    pub fn limit(&self) -> usize { self.inner.state.lock().unwrap_or_else(|e| e.into_inner()).0 }
+    pub fn available(&self) -> usize { let state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner()); state.0.saturating_sub(state.1) }
     pub async fn acquire(&self) -> SlotPermit {
         loop {
-            // Register before looking at the atomics: this avoids a lost
+            // Register before checking the shared slot state: this avoids a lost
             // notification between checking capacity and waiting.
             let wake = self.inner.changed.notified();
             tokio::pin!(wake);
             wake.as_mut().enable();
-            let mut active = self.inner.active.load(Ordering::Acquire);
-            while active < self.inner.limit.load(Ordering::Acquire) {
-                match self.inner.active.compare_exchange_weak(
-                    active, active + 1, Ordering::AcqRel, Ordering::Acquire
-                ) {
-                    Ok(_) => {
-                        return SlotPermit { inner: self.inner.clone() };
-                    }
-                    Err(actual) => active = actual,
+            {
+                let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+                if state.1 < state.0 {
+                    state.1 += 1;
+                    return SlotPermit { inner: self.inner.clone() };
                 }
             }
             wake.await;

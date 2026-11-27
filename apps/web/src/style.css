@@ -5,3 +5,24 @@
 @media(max-width:1100px){.navigation{width:190px}.new-task kbd{display:none}.inspector{width:290px}.download-table{min-width:750px}.download-table th:first-child,.download-table td:first-child{padding-left:16px}.workspace-header,.queue-toolbar,.page-body{padding-left:18px;padding-right:18px}}
 @media(max-width:850px){.navigation{width:62px;padding:16px 8px}.wordmark{padding:0 4px 20px}.wordmark>span:last-child,.new-task kbd,.nav-button span,.nav-button small,.nav-label,.build-label{display:none}.new-task{font-size:0;justify-content:center;margin:0 0 16px;padding:10px}.new-task svg{width:20px;height:20px}.nav-button{justify-content:center}.navigation nav{margin-bottom:15px}.inspector{position:fixed;right:0;top:0;bottom:0;z-index:5;width:min(330px,90vw);box-shadow:-8px 0 40px #0004}.summary-line{grid-template-columns:1fr 1fr}.statusbar{gap:12px}.workspace-header{padding-top:16px}.workspace-header h1{font-size:21px}}
 @media(max-width:520px){.navigation{width:48px;padding:12px 5px}.mark{width:30px;height:30px}.workspace-header,.queue-toolbar,.page-body{padding-left:12px;padding-right:12px}.workspace-header{flex-wrap:wrap}.header-controls .primary{font-size:11px}.search-box{max-width:none;flex-basis:100%}.queue-toolbar select{flex:1}.results-count{display:none}.version-grid{grid-template-columns:1fr}.statusbar{font-size:10px}.stat strong{font-size:20px}}
+
+/* The compact view retains the same single queue and actions, without requiring
+   horizontal scrolling across desktop-only columns. */
+@media(max-width:650px){
+  .download-table,.download-table tbody{display:block;min-width:0;width:100%}
+  .download-table thead{position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)}
+  .download-table tr{display:grid;grid-template-columns:1fr 1fr;gap:8px 12px;padding:13px 12px;border-bottom:1px solid var(--line);align-items:center}
+  .download-table td,.download-table td:first-child{padding:0;border:0;min-width:0;white-space:normal}
+  .download-table td:first-child{grid-column:1/-1}
+  .task-name{max-width:100%;width:100%}
+  .download-table td:nth-child(3){justify-self:end;width:100%;max-width:130px}
+  .progress-cell{width:100%}
+  .download-table td:nth-child(4):before{content:"Received ";font-size:10px;color:var(--muted)}
+  .download-table td:nth-child(5):before{content:"Uploaded ";font-size:10px;color:var(--muted)}
+  .download-table td:nth-child(5){text-align:right}
+  .download-table tr:hover td,.download-table tr.selected-row td{background:transparent}
+  .download-table tr.selected-row{background:var(--selected)}
+  .row-actions{justify-content:flex-end}
+  .row-actions .icon-button{width:34px;height:34px}
+  .download-table .numeric small{display:inline;margin-left:3px}
+}

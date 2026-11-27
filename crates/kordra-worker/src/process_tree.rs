@@ -73,20 +73,38 @@ impl Drop for ProcessTree {
     }
 }
 
-#[cfg(all(test, unix))]
+#[cfg(all(test, any(unix, windows)))]
 mod tests {
     use super::*;
+    use std::process::Stdio;
+    use tokio::io::AsyncReadExt;
     #[tokio::test]
-    async fn group_cancellation_terminates_grandchild() {
-        let mut command = Command::new("sh");
-        command.args(["-c", "sleep 30 & wait"]);
+    async fn group_cancellation_closes_descendant_pipes() {
+        #[cfg(unix)]
+        let mut command = {
+            let mut command = Command::new("sh");
+            command.args(["-c", "sleep 30 & wait"]);
+            command
+        };
+        #[cfg(windows)]
+        let mut command = {
+            let mut command = Command::new("cmd.exe");
+            command.args(["/D", "/C", "ping -n 30 127.0.0.1"]);
+            command
+        };
         configure(&mut command);
+        command.stdout(Stdio::piped()).stderr(Stdio::null());
         let mut child = command.spawn().unwrap();
         let tree = ProcessTree::attach(&child).unwrap();
-        tokio::time::sleep(std::time::Duration::from_millis(150)).await;
+        let mut pipe = child.stdout.take().unwrap();
+        // Give the child time to launch a descendant that inherits stdout.
+        tokio::time::sleep(std::time::Duration::from_millis(400)).await;
         tree.terminate().unwrap();
-        let status = tokio::time::timeout(std::time::Duration::from_secs(3), child.wait())
+        let status = tokio::time::timeout(std::time::Duration::from_secs(4), child.wait())
             .await.unwrap().unwrap();
         assert!(!status.success());
+        let mut bytes = Vec::new();
+        tokio::time::timeout(std::time::Duration::from_secs(4), pipe.read_to_end(&mut bytes))
+            .await.expect("descendant kept the pipe open").unwrap();
     }
 }

@@ -138,13 +138,13 @@ export default function App() {
       <div className="nav-label">Library</div>
       <nav aria-label="Downloads">
         {([["all","All downloads","list"],["active","Downloading","download"],["queued","Waiting","clock"],["paused","Paused","pause"],["completed","Completed","check"],["failed","Failed","alert"],["cancelled","Cancelled","x"]] as const).map(([id,label,icon]) =>
-          <button key={id} aria-label={label} aria-current={page==="downloads"&&filter===id?"page":undefined} className={"nav-button "+(page==="downloads"&&filter===id?"chosen":"")} onClick={() => { nav("downloads"); setFilter(id); }}><Icon name={icon}/><span>{label}</span><small>{count(id)}</small></button>
+          <button key={id} aria-label={label} aria-current={page==="downloads"&&filter===id?"page":undefined} title={label} className={"nav-button "+(page==="downloads"&&filter===id?"chosen":"")} onClick={() => { nav("downloads"); setFilter(id); }}><Icon name={icon}/><span>{label}</span><small>{count(id)}</small></button>
         )}
       </nav>
       <div className="nav-label">Workspace</div>
       <nav aria-label="Workspace">
         {([["activity","Statistics","chart"],["engines","Engines","layers"],["settings","Settings","settings"]] as const).map(([id,label,icon]) =>
-          <button key={id} aria-label={label} aria-current={page===id?"page":undefined} className={"nav-button "+(page===id?"chosen":"")} onClick={() => nav(id)}><Icon name={icon}/><span>{label}</span></button>
+          <button key={id} aria-label={label} aria-current={page===id?"page":undefined} title={label} className={"nav-button "+(page===id?"chosen":"")} onClick={() => nav(id)}><Icon name={icon}/><span>{label}</span></button>
         )}
       </nav>
       <div className="nav-bottom"><button aria-label="Toggle appearance" className="nav-button" onClick={() => setTheme(t => t==="dark"?"light":"dark")}><Icon name={theme==="dark"?"sun":"moon"}/><span>{theme==="dark"?"Light appearance":"Dark appearance"}</span></button><span className="build-label">KORDRA / PRE-ALPHA</span></div>
