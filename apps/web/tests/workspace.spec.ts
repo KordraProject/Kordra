@@ -36,6 +36,11 @@ test("unified workspace, filtering, task detail, adding, settings and themes", a
   await page.goto("/");
   await expect(page.getByRole("heading",{name:"All downloads"})).toBeVisible();
   await expect(page.getByText("ubuntu-24.04.iso",{exact:true})).toBeVisible();
+  await expect(page.locator("html")).toHaveAttribute("data-theme","dark");
+  await expect(page.locator("html")).toHaveCSS("--accent","#8b5cf6");
+  await page.getByRole("button",{name:"Toggle row density"}).click();
+  await expect(page.locator("html")).toHaveAttribute("data-density","compact");
+  await page.getByRole("button",{name:"Toggle row density"}).click();
   await page.screenshot({path:"ui-screenshots/downloads-dark.png",fullPage:true});
   await page.getByRole("button",{name:"Toggle appearance"}).click();
   await expect(page.locator("html")).toHaveAttribute("data-theme","light");

@@ -1,4 +1,4 @@
-import { useCallback, useEffect, useMemo, useState } from "react";
+import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { api, post, prettyBytes } from "./api";
 import type { Channel, DailyTransfer, Download, EngineState, Stats, TorrentDetails, DenoState, EngineLifecycleStatus, StartupMode, ColdRetention, QueueStatus, TransferSettings } from "./types";
 
@@ -8,13 +8,23 @@ const emptyStats: Stats = {
 };
 const themeKey = "kordra-theme";
 const accentKey = "kordra-accent";
+const defaultAccent = "#8b5cf6";
+type Sample = { at: number; tasks: Map<string, Download>; downloaded: number; uploaded: number };
+type Rate = { down: number; up: number };
 type Filter = "all" | "active" | "queued" | "paused" | "completed" | "failed" | "cancelled";
 type Page = "downloads" | "activity" | "engines" | "settings";
 type Theme = "dark" | "light";
 
 export default function App() {
   const [theme, setTheme] = useState<Theme>(() => localStorage.getItem(themeKey) === "light" ? "light" : "dark");
-  const [accent, setAccent] = useState(() => localStorage.getItem(accentKey) ?? "#5285de");
+  const [accent, setAccent] = useState(() => {
+    const old = localStorage.getItem(accentKey);
+    return !old || ["#5285de","#698cff"].includes(old.toLowerCase()) ? defaultAccent : old;
+  });
+  const [density, setDensity] = useState(() => localStorage.getItem("kordra-density") === "compact" ? "compact" : "comfortable");
+  const sample = useRef<Sample | null>(null);
+  const [rates, setRates] = useState<Record<string, Rate>>({});
+  const [traffic, setTraffic] = useState<Rate | null>(null);
   const [token, setToken] = useState(() => sessionStorage.getItem("kordra-api-token") ?? "");
   const [tokenDraft, setTokenDraft] = useState(token);
   const [tasks, setTasks] = useState<Download[]>([]);
@@ -45,10 +55,13 @@ export default function App() {
 
   useEffect(() => {
     document.documentElement.dataset.theme = theme;
+    document.documentElement.dataset.density = density;
+    localStorage.setItem("kordra-density", density);
     document.documentElement.style.setProperty("--accent", accent);
     localStorage.setItem(themeKey, theme);
     localStorage.setItem(accentKey, accent);
-  }, [theme, accent]);
+  }, [theme, accent, density]);
+  useEffect(() => { sample.current = null; setRates({}); setTraffic(null); }, [token]);
   const refresh = useCallback(async () => {
     const [downloadList, summary, state, days, denoState, lifecycleStatus, queueStatus, transferPolicy] = await Promise.all([
       api<Download[]>("/downloads", token), api<Stats>("/stats", token),
@@ -59,6 +72,22 @@ export default function App() {
       api<QueueStatus>("/queue", token),
       api<TransferSettings>("/queue/settings", token)
     ]);
+    const now = performance.now();
+    const prev = sample.current;
+    if (prev && now - prev.at >= 500 && now - prev.at <= 20000) {
+      const seconds = (now-prev.at)/1000;
+      const next: Record<string, Rate> = {};
+      for (const task of downloadList) {
+        const before = prev.tasks.get(task.id);
+        if (before && before.attempts === task.attempts && before.status === "running" && task.status === "running" &&
+            (task.engine === "librqbit" || task.engine === "yt-dlp")) {
+          next[task.id] = { down: Math.max(0,task.downloaded_bytes-before.downloaded_bytes)/seconds, up: Math.max(0,task.uploaded_bytes-before.uploaded_bytes)/seconds };
+        }
+      }
+      setRates(next);
+      setTraffic({down:Math.max(0,summary.total_downloaded_bytes-prev.downloaded)/seconds,up:Math.max(0,summary.total_uploaded_bytes-prev.uploaded)/seconds});
+    } else if (!prev || now-prev.at > 20000) { setRates({}); setTraffic(null); }
+    if (!prev || now-prev.at >= 500) sample.current = {at:now,tasks:new Map(downloadList.map(t=>[t.id,t])),downloaded:summary.total_downloaded_bytes,uploaded:summary.total_uploaded_bytes};
     setTasks(downloadList);
     setStats(summary);
     setDaily(days);
@@ -133,7 +162,7 @@ export default function App() {
   }, []);
   return <div className="workspace">
     <aside className="navigation">
-      <div className="wordmark"><span className="mark"><Icon name="download"/></span><span>Kordra<small>Download manager</small></span></div>
+      <div className="wordmark"><span className="mark" aria-hidden="true"><svg viewBox="0 0 32 32" fill="none"><path d="M7 6h5v20H7zM13 16 23 6h6L19 16l10 10h-6z" fill="currentColor"/></svg></span><span>Kordra<small>TRANSFER WORKSPACE</small></span></div>
       <button aria-label="New download" className="new-task" onClick={() => setAddOpen(true)}><Icon name="plus"/> New download <kbd>Ctrl N</kbd></button>
       <div className="nav-label">Library</div>
       <nav aria-label="Downloads">
@@ -157,16 +186,16 @@ export default function App() {
         <div className="queue-toolbar"><div className="search-box"><Icon name="search"/><input aria-label="Search downloads" placeholder="Find a download" value={search} onChange={e=>setSearch(e.target.value)}/>{search&&<button className="icon-button" aria-label="Clear search" onClick={()=>setSearch("")}><Icon name="x"/></button>}</div>
           <select aria-label="Filter by engine" value={engineFilter} onChange={e=>setEngineFilter(e.target.value)}><option value="all">All engines</option><option value="librqbit">BitTorrent</option><option value="yt-dlp">yt-dlp</option><option value="aria2">aria2</option><option value="gallery-dl">gallery-dl</option></select>
           <select aria-label="Sort downloads" value={sort} onChange={e=>setSort(e.target.value as typeof sort)}><option value="newest">Newest first</option><option value="oldest">Oldest first</option><option value="priority">Priority</option></select>
-          <span className="results-count">{visible.length} shown</span>
+          <span className="results-count">{visible.length} shown</span><button className="icon-button density-button" title="Toggle row density" aria-label="Toggle row density" aria-pressed={density==="compact"} onClick={()=>setDensity(v=>v==="compact"?"comfortable":"compact")}><Icon name="list"/></button>
         </div>
         <div className="queue-space">
           <div className="table-wrap"><table className="download-table"><thead><tr><th>Name</th><th>Status</th><th>Progress</th><th>Received</th><th>Uploaded</th><th>Priority</th><th aria-label="Actions"/></tr></thead><tbody>
           {visible.map(task=>{ const percent=task.status==="completed"?100:task.total_bytes>0?Math.min(100,100*task.downloaded_bytes/task.total_bytes):null;
             return <tr key={task.id} className={selectedId===task.id?"selected-row":""} onClick={()=>selectTask(task)}>
-              <td><button className="task-name" onClick={e=>{e.stopPropagation();selectTask(task);}}><span className="file-symbol"><Icon name={task.engine==="librqbit"?"layers":task.engine==="yt-dlp"?"film":"file"}/></span><span className="file-text"><strong title={task.source}>{taskName(task.source)}</strong><small>{task.engine==="librqbit"?"BitTorrent":task.engine} · {hostName(task.source)}</small></span></button></td>
+              <td><button className="task-name" onClick={e=>{e.stopPropagation();selectTask(task);}}><span className={"file-symbol file-"+task.engine}><Icon name={task.engine==="librqbit"?"layers":task.engine==="yt-dlp"?"film":"file"}/></span><span className="file-text"><strong title={task.source}>{taskName(task.source)}</strong><small>{task.engine==="librqbit"?"BitTorrent":task.engine} · {hostName(task.source)}</small></span></button></td>
               <td><span className={"task-state "+task.status}><i/>{statusName(task.status)}</span></td>
               <td><div className="progress-cell"><span>{percent===null?"—":percent.toFixed(percent===100?0:1)+"%"}</span><div className="progress-track"><div className={task.status==="completed"?"complete":""} style={{width:(percent??0)+"%"}}/></div></div></td>
-              <td className="numeric">{prettyBytes(task.downloaded_bytes)}<small>{task.total_bytes>0?"of "+prettyBytes(task.total_bytes):""}</small></td>
+              <td className="numeric">{prettyBytes(task.downloaded_bytes)}<small>{task.total_bytes>0?"of "+prettyBytes(task.total_bytes):""}</small>{rates[task.id]&&<small className="rate-label" title="Estimated from recorded byte changes">{prettyBytes(rates[task.id].down)}/s</small>}</td>
               <td className="numeric">{prettyBytes(task.uploaded_bytes)}</td>
               <td onClick={e=>e.stopPropagation()}><select className="queue-priority" aria-label={`Priority of ${task.id}`} value={task.priority??0} disabled={busy||!["queued","paused"].includes(task.status)} onChange={e=>void operation(()=>api<Download>(`/downloads/${task.id}/priority`,token,{method:"PUT",body:JSON.stringify({priority:Number(e.target.value)})}))}><option value={2}>Very high</option><option value={1}>High</option><option value={0}>Normal</option><option value={-1}>Low</option><option value={-2}>Very low</option></select></td>
               <td><div className="row-actions" onClick={e=>e.stopPropagation()}>
@@ -387,7 +416,9 @@ export default function App() {
           <div className="panel-head"><h2>Appearance & connection</h2>
             </div>
           <div className="settings-fields">
-            <label>Accent color<input type="color" value={accent} onChange={event => setAccent(event.target.value)} /></label>
+            <label>Appearance<select value={theme} onChange={e=>setTheme(e.target.value as Theme)}><option value="dark">Midnight violet</option><option value="light">Light lavender</option></select></label>
+            <div className="accent-field"><span>Accent color</span><div className="accent-options">{[defaultAccent,"#6366f1","#0e9f9a","#2785dc","#d4548d"].map(color=><button key={color} className="accent-swatch" aria-label={"Accent "+color} title={color} aria-pressed={accent===color} style={{background:color}} onClick={()=>setAccent(color)}>{accent===color&&<Icon name="check"/>}</button>)}<input aria-label="Custom accent color" type="color" value={accent} onChange={event=>setAccent(event.target.value)}/></div></div>
+            <label>Queue density<select value={density} onChange={e=>setDensity(e.target.value)}><option value="comfortable">Comfortable</option><option value="compact">Compact</option></select></label>
             <form onSubmit={saveToken}><label>API access token (current tab session only)
               <input type="password" autoComplete="off" value={tokenDraft}
                 onChange={event => setTokenDraft(event.target.value)} placeholder="Optional for local daemon" />
@@ -396,7 +427,7 @@ export default function App() {
         </section>
 </>}
       </div>}
-      <footer className="statusbar"><span><i className={"connection-dot "+(!connected?"offline":"")}/>{connected?"Last sync "+lastUpdated:lastUpdated?"Disconnected":"Connecting"}</span><span>{queue?.running??0} running / {queue?.max_concurrent??2} slots</span><span>{queue?.queued??0} waiting</span><div className="status-spacer"/><span><Icon name="download"/> {prettyBytes(stats.total_downloaded_bytes)}</span><span><Icon name="upload"/> {prettyBytes(stats.total_uploaded_bytes)}</span></footer>
+      <footer className="statusbar"><span><i className={"connection-dot "+(!connected?"offline":"")}/>{connected?"Last sync "+lastUpdated:lastUpdated?"Disconnected":"Connecting"}</span><span>{queue?.running??0} running / {queue?.max_concurrent??2} slots</span><span>{queue?.queued??0} waiting</span><div className="status-spacer"/><span title="Estimated recorded receive rate; not network-interface throughput"><Icon name="download"/> <strong>{connected&&traffic?prettyBytes(traffic.down)+"/s":"—"}</strong></span><span title="Estimated recorded upload rate"><Icon name="upload"/> <strong>{connected&&traffic?prettyBytes(traffic.up)+"/s":"—"}</strong></span></footer>
     </main>
     {page==="downloads"&&selected&&<aside className="inspector" aria-label="Download details"><div className="inspector-top"><span>Download details</span><button className="icon-button" aria-label="Close details" onClick={()=>{setSelectedId(null);setSelectedTorrent(null);}}><Icon name="x"/></button></div><div className="inspector-body">
       <div className="inspector-file"><span className="file-symbol"><Icon name="file"/></span><h2>{activeTorrent?selectedTorrent!.details.name||taskName(selected.source):taskName(selected.source)}</h2><span className={"task-state "+selected.status}><i/>{statusName(selected.status)}</span></div>
