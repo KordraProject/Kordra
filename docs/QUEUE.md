@@ -76,3 +76,11 @@ sizing. yt-dlp receives `--limit-rate` for tasks **started after** a policy
 update; running CLI processes are not reconfigured. yt-dlp's limit is per job,
 not an aggregate cap across multiple simultaneous jobs. Other engines and
 external FFmpeg subprocesses are not yet guaranteed to respect these limits.
+
+## Shared download budget and external adapters
+
+Optional `global_download_bps` reserves one equal payload-rate share for librqbit and one for every configured parallel CLI slot (rate divided by concurrency + 1). A smaller engine-specific cap wins. Unused shares are not borrowed; it is not a network-interface shaper and cannot guarantee limits on metadata, protocol overhead, or external post-processors. Existing CLI children cannot be retuned: changes to the shared budget or slot count are rejected while CLI jobs are registered or more slots are occupied than the requested limit. The per-engine torrent upload cap is unchanged. Old JSON settings without the new field remain valid.
+
+External aria2 and gallery-dl adapters accept HTTP(S) sources, execute administrator-installed binaries from absolute KORDRA_ARIA2_PATH / KORDRA_GALLERY_DL_PATH or absolute PATH directories, and write into a task-specific download directory. Native config files are ignored. aria2 torrent/metalink auto-follow is disabled; BitTorrent remains librqbit. Both adapters currently report final local output size, not live network bytes. Managed verified auto-installation and version selection for these engines are not yet implemented. Hot/cold modes apply to short-lived CLI adapters without idle subprocesses.
+
+All three CLI engines use isolated Unix process groups or Windows Job Objects to cancel descendants. Windows attaches the job immediately after process creation (a small launch race remains); on Unix detached descendants or abrupt daemon termination are not guaranteed to be covered. Standard output drain has a bounded timeout. Files are kept on cancellation.

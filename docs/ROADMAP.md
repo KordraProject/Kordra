@@ -27,3 +27,8 @@
 - [ ] Agent enrollment, authenticated transport, device metrics and shared multi-device queue.
 - [ ] Multi-arch headless packages and GHCR Docker images.
 - [ ] Rust/Node lockfiles and strict formatting checks, security audit, updater signatures.
+
+- [x] Desktop-first workspace redesign with one unified queue, inspector, separate statistics and settings.
+- [x] Initial aria2 / gallery-dl external CLI adapters (administrator-installed, no automatic package management yet).
+- [x] Conservative shared payload download budget and initial process-tree cancellation.
+- [ ] Verified automatic install/update, live external progress and RPC-backed persistent aria2, adaptive shared bandwidth allocation, end-to-end process supervision.

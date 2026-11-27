@@ -84,6 +84,7 @@ export type QueueStatus = {
 
 export type TransferSettings = {
   concurrency: number;
+  global_download_bps: number | null;
   yt_dlp_download_bps: number | null;
   torrent_download_bps: number | null;
   torrent_upload_bps: number | null;

@@ -326,6 +326,14 @@ export default function App() {
                   ...current, concurrency: Number(event.target.value)
                 } : null)} />
             </label>
+            <label>Shared download budget (KiB/s, 0 = unlimited)
+              <input type="number" min={0} max={3906250} step={1}
+                disabled={busy || !transferDraft}
+                value={Math.round((transferDraft?.global_download_bps ?? 0) / 1024)}
+                onChange={event => setTransferDraft(current => current ? {
+                  ...current, global_download_bps: Number(event.target.value) > 0 ? Number(event.target.value) * 1024 : null
+                } : null)} />
+            </label>
             <label>yt-dlp download (KiB/s, 0 = unlimited)
               <input type="number" min={0} max={976562} step={1}
                 disabled={busy || !transferDraft}
@@ -371,7 +379,7 @@ export default function App() {
           <p className="version-note">
             Changes persist after restart. Lowering parallelism does not interrupt running tasks.
             Torrent limits apply immediately to the shared session (minimum 64 KiB/s).
-            yt-dlp limits apply to newly started jobs (minimum 1 KiB/s), not existing subprocesses.
+            CLI limits apply to newly started jobs, not existing subprocesses. The shared budget reserves an equal share for each CLI slot and the torrent session; each share must be at least 64 KiB/s. Changes to this budget or slot count require active CLI jobs to finish.
           </p>
         </section>
         <section className="panel">

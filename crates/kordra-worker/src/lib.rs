@@ -51,14 +51,25 @@ impl Worker {
     pub async fn transfer_settings(&self) -> TransferSettings { self.transfer.get().await }
     pub async fn apply_transfer_settings(&self) -> Result<()> {
         let settings = self.transfer.get().await;
-        self.torrents.set_rate_limits(settings.torrent_download_bps,
+        self.torrents.set_rate_limits(settings.torrent_limit(),
             settings.torrent_upload_bps).await;
         self.slots.set_limit(settings.concurrency);
         Ok(())
     }
     pub async fn set_transfer_settings(&self, settings: TransferSettings) -> Result<TransferSettings> {
+        let settings = settings.validate()?;
+        // Serialize settings with CLI admission. Existing CLI processes retain
+        // their rates, so a new shared budget cannot be imposed on them safely.
+        let handles = self.running_cli.lock().await;
+        let old = self.transfer.get().await;
+        if (old.global_download_bps.is_some() || settings.global_download_bps.is_some()) &&
+            (old.global_download_bps != settings.global_download_bps || old.concurrency != settings.concurrency) &&
+            (!handles.is_empty() || self.slots.active() > settings.concurrency) {
+            bail!("wait for active CLI jobs to finish before changing the shared budget or its slot count");
+        }
         self.transfer.save(settings).await?;
         self.apply_transfer_settings().await?;
+        drop(handles);
         Ok(settings)
     }
     pub async fn lifecycle_policy(&self) -> EngineLifecyclePolicy { self.lifecycle.get().await }
@@ -441,7 +452,7 @@ impl Worker {
     async fn run_ytdlp(&self, task: Download, cancellation: CancellationToken) -> Result<()> {
         // yt-dlp has no persistent RPC control. New tasks take a snapshot of
         // the current limit; running CLI processes keep their existing rate.
-        let download_limit = self.transfer.get().await.yt_dlp_download_bps;
+        let download_limit = self.transfer.get().await.cli_limit("yt-dlp");
         let binary = tokio::select! {
             result = self.manager.ensure_active() => result?,
             _ = cancellation.cancelled() => {
@@ -482,6 +493,7 @@ impl Worker {
         let destination = self.downloads.join(&task.id);
         tokio::fs::create_dir_all(&destination).await?;
         let mut command = Command::new(executable);
+        let cap = self.transfer.get().await.cli_limit(&task.engine);
         match task.engine.as_str() {
             "aria2" => {
                 command.args(["--no-conf=true", "--continue=true", "--allow-overwrite=false",
@@ -489,10 +501,12 @@ impl Worker {
                     "--follow-metalink=false", "--summary-interval=1", "--console-log-level=warn",
                     "--download-result=hide", "--file-allocation=none"])
                     .arg("--dir").arg(&destination);
+                if let Some(rate) = cap { command.arg(format!("--max-download-limit={rate}")); }
             }
             "gallery-dl" => {
                 command.arg("--config-ignore")
                     .arg("--destination").arg(&destination);
+                if let Some(rate) = cap { command.arg("--limit-rate").arg(rate.to_string()); }
             }
             _ => bail!("unknown external engine"),
         }
