@@ -49,6 +49,7 @@ pub fn router(state: ApiState) -> Router {
         .route("/engines/capabilities", get(capabilities))
         .route("/engines/lifecycle", get(engine_lifecycle).put(set_engine_lifecycle))
         .route("/engines/{id}/prepare", post(prepare_engine))
+        .route("/engines/gallery-dl/update", post(update_gallery))
         .route("/queue", get(queue_status))
         .route("/queue/settings", get(get_transfer_settings).put(set_transfer_settings))
         .route("/stats", get(stats))
@@ -174,13 +175,16 @@ async fn set_engine_lifecycle(State(state): State<ApiState>, Json(policy): Json<
 async fn prepare_engine(Path(id): Path<String>, State(state): State<ApiState>) -> ApiResult<Json<serde_json::Value>> {
     state.worker.prepare_engine(&id).await.map(Json).map_err(invalid)
 }
+async fn update_gallery(State(state): State<ApiState>) -> ApiResult<Json<serde_json::Value>> {
+    state.worker.update_gallery().await.map(Json).map_err(invalid)
+}
 async fn capabilities() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "engines": [
             {"id":"yt-dlp","name":"yt-dlp","installed":"on_demand","sources":["http","https"],"capabilities":["download","versions"]},
             {"id":"librqbit","name":"librqbit","installed":"embedded","sources":["magnet","http","https"],"capabilities":["download","seed","transfer_stats"]},
             {"id":"aria2","name":"aria2","installed":"external","sources":["http","https"],"capabilities":["download","cancel"]},
-            {"id":"gallery-dl","name":"gallery-dl","installed":"external","sources":["http","https"],"capabilities":["download","cancel"]}
+            {"id":"gallery-dl","name":"gallery-dl","installed":"managed_or_external","sources":["http","https"],"capabilities":["download","cancel"]}
         ]
     }))
 }

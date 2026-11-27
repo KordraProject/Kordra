@@ -22,3 +22,7 @@ Stable release archives are verified with their matching `.zip.sha256sum` asset,
 API endpoints and Web UI support version installation, manual activation, pinning and rollback. Active installations periodically check for updates once a day (if enabled and not pinned). Versioned paths permit concurrent downloads to continue using a previous runtime.
 
 These are SHA-256 checks, not cryptographic publisher signatures. Full artifact attestations and Windows atomic activation are future milestones.
+
+## gallery-dl managed rolling builds
+
+On Windows x64 and Linux x64, gallery-dl is automatically installed on first use if no administrator-installed executable is available. The official `gdl-org/builds` rolling release provides a platform asset and SHA-256 digest in GitHub release metadata. Kordra enforces the declared size (100 MB maximum), checks the digest before execution, runs a bounded `--version` check and atomically renames the executable into its date-versioned directory. A failed update does not replace an installed build. Existing jobs keep their original path. A manual update is available through `POST /api/v1/engines/gallery-dl/update` and the Engines view. These builds are upstream rolling builds, not stable Python-package releases; automatic update policy, version pinning/rollback and Linux ARM64 bundles remain future work. Administrator paths/PATH take precedence; on unsupported platforms install gallery-dl externally. aria2 remains externally managed.

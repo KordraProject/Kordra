@@ -8,7 +8,7 @@ pub use transfer_settings::{TransferSettings, TransferStore};
 use transfer_settings::LiveSlots;
 use anyhow::{bail, Context, Result};
 use kordra_core::{Database, Download};
-use kordra_engine_manager::{DenoManager, YtDlpManager};
+use kordra_engine_manager::{DenoManager, GalleryManager, YtDlpManager};
 use kordra_torrent::TorrentEngine;
 use std::{collections::{HashMap, HashSet}, path::PathBuf, process::Stdio, sync::{atomic::{AtomicBool, Ordering}, Arc}, time::Duration};
 use tokio::{io::{AsyncBufReadExt, BufReader}, process::Command, sync::{Mutex, Notify}};
@@ -19,6 +19,7 @@ pub struct Worker {
     db: Database,
     manager: YtDlpManager,
     deno: DenoManager,
+    gallery: GalleryManager,
     torrents: TorrentEngine,
     downloads: PathBuf,
     lifecycle: PolicyStore,
@@ -31,9 +32,9 @@ pub struct Worker {
 }
 impl Worker {
     pub async fn new(db: Database, manager: YtDlpManager, deno: DenoManager, downloads: PathBuf,
-        lifecycle: PolicyStore, transfer: TransferStore) -> Self {
+        lifecycle: PolicyStore, transfer: TransferStore, gallery: GalleryManager) -> Self {
         let settings = transfer.get().await;
-        Self { db, manager, deno, torrents: TorrentEngine::new(downloads.clone()), downloads,
+        Self { db, manager, deno, gallery, torrents: TorrentEngine::new(downloads.clone()), downloads,
             lifecycle, running_cli: Arc::new(Mutex::new(HashMap::new())),
             restoring_seeds: Arc::new(Mutex::new(HashSet::new())),
             queue_notify: Arc::new(Notify::new()), queue_started: Arc::new(AtomicBool::new(false)),
@@ -77,6 +78,8 @@ impl Worker {
         let torrent_ready = self.torrents.is_ready().await;
         let ytdlp = self.manager.state().await?;
         let deno = self.deno.state().await?;
+        let gallery_version = self.gallery.installed_version().await?;
+        let gallery_external = external_path("gallery-dl").is_ok();
         Ok(serde_json::json!({
             "policy": self.lifecycle.get().await,
             "engines": [
@@ -85,7 +88,8 @@ impl Worker {
                 {"id":"yt-dlp","kind":"short_lived_cli","ready":ytdlp.active.is_some(),
                     "active_version":ytdlp.active,"persistent_process_supported":false},
                 {"id":"aria2","kind":"external_cli","ready":external_path("aria2").is_ok(),"persistent_process_supported":false},
-                {"id":"gallery-dl","kind":"external_cli","ready":external_path("gallery-dl").is_ok(),"persistent_process_supported":false},
+                {"id":"gallery-dl","kind":if gallery_external {"external_cli"} else {"managed_cli"},"ready":gallery_external || gallery_version.is_some(),
+                    "active_version":if gallery_external {None} else {gallery_version},"managed_install_supported":self.gallery.supported() && !gallery_external,"persistent_process_supported":false},
                 {"id":"deno","kind":"runtime_dependency","ready":deno.active.is_some(),
                     "active_version":deno.active,"persistent_process_supported":false}
             ]
@@ -119,7 +123,8 @@ impl Worker {
             "librqbit" => self.torrents.warm().await?,
             "yt-dlp" => { let _ = self.manager.ensure_active().await?; },
             "deno" => { let _ = self.deno.ensure_active().await?; },
-            "aria2" | "gallery-dl" => { let _ = external_path(name)?; },
+            "aria2" => { let _ = external_path(name)?; },
+            "gallery-dl" => { let _ = self.gallery_path().await?; },
             _ => bail!("unsupported engine or runtime: {name}"),
         }
         self.lifecycle_status().await
@@ -487,8 +492,30 @@ impl Worker {
             .arg(&task.source);
         self.run_cli_command(task, cancellation, command).await
     }
+    async fn gallery_path(&self) -> Result<PathBuf> {
+        match external_path("gallery-dl") {
+            Ok(path) => Ok(path),
+            Err(error) if std::env::var_os("KORDRA_GALLERY_DL_PATH").is_some() => Err(error),
+            Err(_) => self.gallery.ensure_active().await,
+        }
+    }
+    pub async fn update_gallery(&self) -> Result<serde_json::Value> {
+        if std::env::var_os("KORDRA_GALLERY_DL_PATH").is_some() || external_path("gallery-dl").is_ok() {
+            bail!("gallery-dl is administrator-managed; update the external executable instead");
+        }
+        self.gallery.update().await?;
+        self.lifecycle_status().await
+    }
     async fn run_external(&self, task: Download, cancellation: CancellationToken) -> Result<()> {
-        let executable = external_path(&task.engine)?;
+        let executable = if task.engine == "gallery-dl" {
+            tokio::select! {
+                result = self.gallery_path() => result?,
+                _ = cancellation.cancelled() => {
+                    self.db.finish_cancelled(&task.id).await?;
+                    return Ok(());
+                }
+            }
+        } else { external_path(&task.engine)? };
         // Isolate external engine output by task ID. Retrying uses the same directory.
         let destination = self.downloads.join(&task.id);
         tokio::fs::create_dir_all(&destination).await?;

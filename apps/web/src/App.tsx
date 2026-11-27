@@ -339,7 +339,8 @@ export default function App() {
             {lifecycle?.engines.map(engine => <div key={engine.id} className="engine-runtime-item">
               <div><strong>{engine.id}</strong><span>{engine.kind.replaceAll("_", " ")} · {engine.ready ? "Ready" : "Not initialized"}</span></div>
               <button className="button secondary" disabled={busy || engine.ready}
-                onClick={() => void operation(() => post(`/engines/${engine.id}/prepare`, token))}>{engine.kind==="external_cli"?"Check installation":"Prepare"}</button>
+                onClick={() => void operation(() => post(`/engines/${engine.id}/prepare`, token))}>{engine.kind==="external_cli"?"Check installation":engine.id==="gallery-dl"?"Install verified build":"Prepare"}</button>
+              {engine.id==="gallery-dl"&&engine.ready&&engine.managed_install_supported&&<button className="button secondary" disabled={busy} onClick={()=>void operation(()=>post("/engines/gallery-dl/update",token))}>Check updates</button>}
             </div>)}
           </div>
         </section>

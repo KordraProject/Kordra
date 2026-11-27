@@ -1,5 +1,7 @@
 //! Safe, managed yt-dlp standalone releases.
 mod deno;
+mod gallery;
+pub use gallery::GalleryManager;
 pub use deno::{DenoManager, DenoState};
 use anyhow::{anyhow, bail, Context, Result};
 use reqwest::Client;

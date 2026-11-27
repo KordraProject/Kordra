@@ -71,6 +71,7 @@ export type EngineLifecycleStatus = {
     active_tasks?: number;
     active_version?: string | null;
     persistent_process_supported?: boolean;
+    managed_install_supported?: boolean;
   }>;
 };
 

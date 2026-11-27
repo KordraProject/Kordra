@@ -1,7 +1,7 @@
 use anyhow::{bail, Result};
 use kordra_api::{router, ApiState};
 use kordra_core::Database;
-use kordra_engine_manager::{DenoManager, YtDlpManager};
+use kordra_engine_manager::{DenoManager, GalleryManager, YtDlpManager};
 use kordra_worker::{PolicyStore, TransferStore, Worker};
 use std::{env, net::SocketAddr, path::PathBuf, time::Duration};
 use tokio::net::TcpListener;
@@ -23,11 +23,12 @@ async fn main() -> Result<()> {
     let db = Database::open(&data).await?;
     let manager = YtDlpManager::new(data.clone())?;
     let deno = DenoManager::new(data.clone())?;
+    let gallery = GalleryManager::new(data.clone())?;
     let lifecycle = PolicyStore::open(data.clone()).await?;
     let default_concurrency: usize = env::var("KORDRA_CONCURRENCY")
         .unwrap_or_else(|_| "2".to_owned()).parse()?;
     let transfer = TransferStore::open(data, default_concurrency).await?;
-    let worker = Worker::new(db.clone(), manager.clone(), deno.clone(), downloads, lifecycle, transfer).await;
+    let worker = Worker::new(db.clone(), manager.clone(), deno.clone(), downloads, lifecycle, transfer, gallery).await;
     worker.apply_transfer_settings().await?;
     worker.apply_startup_policy().await?;
     // Reattach successful torrents in persistent/hot mode without blocking the
