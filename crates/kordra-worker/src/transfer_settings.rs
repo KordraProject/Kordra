@@ -2,13 +2,16 @@
 //! Only claimed/running tasks occupy a slot; queued SQLite rows need no Tokio task.
 use anyhow::{bail, Context, Result};
 use serde::{Deserialize, Serialize};
-use std::{path::PathBuf, sync::{Arc, atomic::{AtomicUsize, Ordering}}};
+use std::{path::PathBuf, sync::{Arc, Mutex as StdMutex}};
 use tokio::sync::{Mutex, Notify, RwLock};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TransferSettings {
     pub concurrency: usize,
+    /// Shared payload budget (B/s); one share for librqbit and one per CLI slot.
+    #[serde(default)]
+    pub global_download_bps: Option<u64>,
     /// Effective for new yt-dlp processes (bytes per second).
     pub yt_dlp_download_bps: Option<u64>,
     /// Applied immediately to librqbit's session-wide limiter (bytes per second).
@@ -18,13 +21,18 @@ pub struct TransferSettings {
 impl TransferSettings {
     pub fn with_concurrency(concurrency: usize) -> Self {
         Self {
-            concurrency, yt_dlp_download_bps: None,
+            concurrency, global_download_bps: None, yt_dlp_download_bps: None,
             torrent_download_bps: None, torrent_upload_bps: None
         }
     }
     pub fn validate(self) -> Result<Self> {
         if !(1..=32).contains(&self.concurrency) {
             bail!("concurrency must be between 1 and 32");
+        }
+        if let Some(bps) = self.global_download_bps {
+            if bps > 4_000_000_000 || bps / (self.concurrency as u64 + 1) < 65_536 {
+                bail!("global_download_bps must provide at least 65536 B/s per slot and torrent session (maximum 4000000000)");
+            }
         }
         if let Some(bps) = self.yt_dlp_download_bps {
             if !(1024..=1_000_000_000).contains(&bps) {
@@ -42,6 +50,24 @@ impl TransferSettings {
             }
         }
         Ok(self)
+    }
+    fn share(self) -> Option<u64> {
+        self.global_download_bps.map(|bps| bps / (self.concurrency as u64 + 1))
+    }
+    pub fn cli_limit(self, engine: &str) -> Option<u64> {
+        let own = if engine == "yt-dlp" { self.yt_dlp_download_bps } else { None };
+        match (own, self.share()) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            _ => None,
+        }
+    }
+    pub fn torrent_limit(self) -> Option<u32> {
+        match (self.torrent_download_bps, self.share().map(|x| x as u32)) {
+            (Some(a), Some(b)) => Some(a.min(b)),
+            (Some(a), None) | (None, Some(a)) => Some(a),
+            _ => None,
+        }
     }
 }
 
@@ -113,8 +139,7 @@ pub struct LiveSlots {
     inner: Arc<SlotInner>,
 }
 struct SlotInner {
-    limit: AtomicUsize,
-    active: AtomicUsize,
+    state: StdMutex<(usize, usize)>,
     changed: Notify,
 }
 pub struct SlotPermit {
@@ -122,7 +147,7 @@ pub struct SlotPermit {
 }
 impl Drop for SlotPermit {
     fn drop(&mut self) {
-        self.inner.active.fetch_sub(1, Ordering::AcqRel);
+        { let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner()); state.1 -= 1; }
         self.inner.changed.notify_waiters();
     }
 }
@@ -130,35 +155,30 @@ impl LiveSlots {
     pub fn new(limit: usize) -> Self {
         assert!((1..=32).contains(&limit));
         Self { inner: Arc::new(SlotInner {
-            limit: AtomicUsize::new(limit),
-            active: AtomicUsize::new(0),
+            state: StdMutex::new((limit, 0)),
             changed: Notify::new()
         }) }
     }
     pub fn set_limit(&self, limit: usize) {
         assert!((1..=32).contains(&limit));
-        self.inner.limit.store(limit, Ordering::Release);
+        self.inner.state.lock().unwrap_or_else(|e| e.into_inner()).0 = limit;
         self.inner.changed.notify_waiters();
     }
-    pub fn active(&self) -> usize { self.inner.active.load(Ordering::Acquire) }
-    pub fn limit(&self) -> usize { self.inner.limit.load(Ordering::Acquire) }
-    pub fn available(&self) -> usize { self.limit().saturating_sub(self.active()) }
+    pub fn active(&self) -> usize { self.inner.state.lock().unwrap_or_else(|e| e.into_inner()).1 }
+    pub fn limit(&self) -> usize { self.inner.state.lock().unwrap_or_else(|e| e.into_inner()).0 }
+    pub fn available(&self) -> usize { let state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner()); state.0.saturating_sub(state.1) }
     pub async fn acquire(&self) -> SlotPermit {
         loop {
-            // Register before looking at the atomics: this avoids a lost
+            // Register before checking the shared slot state: this avoids a lost
             // notification between checking capacity and waiting.
             let wake = self.inner.changed.notified();
             tokio::pin!(wake);
             wake.as_mut().enable();
-            let mut active = self.inner.active.load(Ordering::Acquire);
-            while active < self.inner.limit.load(Ordering::Acquire) {
-                match self.inner.active.compare_exchange_weak(
-                    active, active + 1, Ordering::AcqRel, Ordering::Acquire
-                ) {
-                    Ok(_) => {
-                        return SlotPermit { inner: self.inner.clone() };
-                    }
-                    Err(actual) => active = actual,
+            {
+                let mut state = self.inner.state.lock().unwrap_or_else(|e| e.into_inner());
+                if state.1 < state.0 {
+                    state.1 += 1;
+                    return SlotPermit { inner: self.inner.clone() };
                 }
             }
             wake.await;
@@ -198,10 +218,14 @@ mod tests {
         let _ = tokio::fs::remove_dir_all(&dir).await;
         let store = TransferStore::open(dir.clone(), 2).await.unwrap();
         let settings = TransferSettings {
-            concurrency: 7, yt_dlp_download_bps: Some(524288),
+            concurrency: 7, global_download_bps: Some(8*65536), yt_dlp_download_bps: Some(524288),
             torrent_download_bps: Some(65536), torrent_upload_bps: None
         };
         store.save(settings).await.unwrap();
+        assert_eq!(settings.cli_limit("yt-dlp"), Some(65536));
+        assert_eq!(settings.cli_limit("aria2"), Some(65536));
+        assert_eq!(settings.torrent_limit(), Some(65536));
+        assert!(TransferSettings { global_download_bps: Some(1024), ..settings }.validate().is_err());
         assert_eq!(TransferStore::open(dir.clone(), 1).await.unwrap().get().await, settings);
         assert!(store.save(TransferSettings { concurrency: 0, ..settings }).await.is_err());
         assert!(store.save(TransferSettings { torrent_download_bps: Some(5), ..settings }).await.is_err());

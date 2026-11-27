@@ -20,6 +20,8 @@ enum Operation {
     SetTransfers {
         concurrency: usize,
         #[arg(long, default_value_t = 0)]
+        global_download_bps: u64,
+        #[arg(long, default_value_t = 0)]
         yt_dlp_download_bps: u64,
         #[arg(long, default_value_t = 0)]
         torrent_download_bps: u32,
@@ -57,10 +59,11 @@ async fn main() -> Result<()> {
         Operation::Stats => (false, "/stats".into(), None),
         Operation::Queue => (false, "/queue".into(), None),
         Operation::TransferSettings => (false, "/queue/settings".into(), None),
-        Operation::SetTransfers { concurrency, yt_dlp_download_bps,
+        Operation::SetTransfers { concurrency, global_download_bps, yt_dlp_download_bps,
             torrent_download_bps, torrent_upload_bps } =>
             (true, "/queue/settings".into(), Some(serde_json::json!({
                 "concurrency": concurrency,
+                "global_download_bps": if global_download_bps == 0 { None } else { Some(global_download_bps) },
                 "yt_dlp_download_bps": if yt_dlp_download_bps == 0 { None } else { Some(yt_dlp_download_bps) },
                 "torrent_download_bps": if torrent_download_bps == 0 { None } else { Some(torrent_download_bps) },
                 "torrent_upload_bps": if torrent_upload_bps == 0 { None } else { Some(torrent_upload_bps) }

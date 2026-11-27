@@ -157,7 +157,7 @@ async fn retry_download(Path(id): Path<String>, State(state): State<ApiState>) -
     })
 }
 async fn new_download(State(state): State<ApiState>, Json(req): Json<NewDownload>) -> ApiResult<(StatusCode, Json<Download>)> {
-    if req.engine != "yt-dlp" && req.engine != "librqbit" {
+    if !matches!(req.engine.as_str(), "yt-dlp" | "librqbit" | "aria2" | "gallery-dl") {
         return Err((StatusCode::NOT_IMPLEMENTED, Json(ErrorBody { error: "engine adapter not implemented yet".into() })));
     }
     let task = state.db.create(req).await.map_err(invalid)?;
@@ -178,7 +178,9 @@ async fn capabilities() -> Json<serde_json::Value> {
     Json(serde_json::json!({
         "engines": [
             {"id":"yt-dlp","name":"yt-dlp","installed":"on_demand","sources":["http","https"],"capabilities":["download","versions"]},
-            {"id":"librqbit","name":"librqbit","installed":"embedded","sources":["magnet","http","https"],"capabilities":["download","seed","transfer_stats"]}
+            {"id":"librqbit","name":"librqbit","installed":"embedded","sources":["magnet","http","https"],"capabilities":["download","seed","transfer_stats"]},
+            {"id":"aria2","name":"aria2","installed":"external","sources":["http","https"],"capabilities":["download","cancel"]},
+            {"id":"gallery-dl","name":"gallery-dl","installed":"external","sources":["http","https"],"capabilities":["download","cancel"]}
         ]
     }))
 }

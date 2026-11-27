@@ -2,6 +2,7 @@
 //! Cancellation of CLI jobs is supported; full process-tree supervision remains planned.
 mod lifecycle;
 mod transfer_settings;
+mod process_tree;
 pub use lifecycle::{ColdRetention, EngineLifecyclePolicy, PolicyStore, StartupMode};
 pub use transfer_settings::{TransferSettings, TransferStore};
 use transfer_settings::LiveSlots;
@@ -50,14 +51,25 @@ impl Worker {
     pub async fn transfer_settings(&self) -> TransferSettings { self.transfer.get().await }
     pub async fn apply_transfer_settings(&self) -> Result<()> {
         let settings = self.transfer.get().await;
-        self.torrents.set_rate_limits(settings.torrent_download_bps,
+        self.torrents.set_rate_limits(settings.torrent_limit(),
             settings.torrent_upload_bps).await;
         self.slots.set_limit(settings.concurrency);
         Ok(())
     }
     pub async fn set_transfer_settings(&self, settings: TransferSettings) -> Result<TransferSettings> {
+        let settings = settings.validate()?;
+        // Serialize settings with CLI admission. Existing CLI processes retain
+        // their rates, so a new shared budget cannot be imposed on them safely.
+        let handles = self.running_cli.lock().await;
+        let old = self.transfer.get().await;
+        if (old.global_download_bps.is_some() || settings.global_download_bps.is_some()) &&
+            (old.global_download_bps != settings.global_download_bps || old.concurrency != settings.concurrency) &&
+            (!handles.is_empty() || self.slots.active() > settings.concurrency) {
+            bail!("wait for active CLI jobs to finish before changing the shared budget or its slot count");
+        }
         self.transfer.save(settings).await?;
         self.apply_transfer_settings().await?;
+        drop(handles);
         Ok(settings)
     }
     pub async fn lifecycle_policy(&self) -> EngineLifecyclePolicy { self.lifecycle.get().await }
@@ -72,6 +84,8 @@ impl Worker {
                     "active_tasks":self.torrents.active_count().await},
                 {"id":"yt-dlp","kind":"short_lived_cli","ready":ytdlp.active.is_some(),
                     "active_version":ytdlp.active,"persistent_process_supported":false},
+                {"id":"aria2","kind":"external_cli","ready":external_path("aria2").is_ok(),"persistent_process_supported":false},
+                {"id":"gallery-dl","kind":"external_cli","ready":external_path("gallery-dl").is_ok(),"persistent_process_supported":false},
                 {"id":"deno","kind":"runtime_dependency","ready":deno.active.is_some(),
                     "active_version":deno.active,"persistent_process_supported":false}
             ]
@@ -105,6 +119,7 @@ impl Worker {
             "librqbit" => self.torrents.warm().await?,
             "yt-dlp" => { let _ = self.manager.ensure_active().await?; },
             "deno" => { let _ = self.deno.ensure_active().await?; },
+            "aria2" | "gallery-dl" => { let _ = external_path(name)?; },
             _ => bail!("unsupported engine or runtime: {name}"),
         }
         self.lifecycle_status().await
@@ -117,7 +132,7 @@ impl Worker {
 
     async fn execute_claimed(&self, item: Download) -> Result<()> {
         match item.engine.as_str() {
-            "yt-dlp" => {
+            "yt-dlp" | "aria2" | "gallery-dl" => {
                 let token = CancellationToken::new();
                 {
                     // The cancellation endpoint takes this same mutex while it
@@ -134,7 +149,9 @@ impl Worker {
                         _ => return Ok(()),
                     }
                 }
-                let outcome = self.run_ytdlp(item.clone(), token).await;
+                let outcome = if item.engine == "yt-dlp" {
+                    self.run_ytdlp(item.clone(), token).await
+                } else { self.run_external(item.clone(), token).await };
                 self.running_cli.lock().await.remove(&item.id);
                 outcome
             }
@@ -200,7 +217,7 @@ impl Worker {
                     bail!("task state changed before cancellation");
                 }
             }
-            "running" if item.engine == "yt-dlp" => {
+            "running" if matches!(item.engine.as_str(), "yt-dlp" | "aria2" | "gallery-dl") => {
                 // Hold the registration lock through the SQLite transition.
                 // If the worker has not registered yet, it will notice the
                 // cancelling state before launching any subprocess.
@@ -435,7 +452,7 @@ impl Worker {
     async fn run_ytdlp(&self, task: Download, cancellation: CancellationToken) -> Result<()> {
         // yt-dlp has no persistent RPC control. New tasks take a snapshot of
         // the current limit; running CLI processes keep their existing rate.
-        let download_limit = self.transfer.get().await.yt_dlp_download_bps;
+        let download_limit = self.transfer.get().await.cli_limit("yt-dlp");
         let binary = tokio::select! {
             result = self.manager.ensure_active() => result?,
             _ = cancellation.cancelled() => {
@@ -458,7 +475,7 @@ impl Worker {
             };
             command.arg("--js-runtimes").arg(format!("deno:{}", deno.display()));
         }
-        let mut child = command
+        command
             .arg("--ignore-config")
             .arg("--no-playlist")
             .arg("--newline")
@@ -467,13 +484,48 @@ impl Worker {
             .arg("--paths")
             .arg(&self.downloads)
             .arg("--")
-            .arg(&task.source)
-            .stdin(Stdio::null())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::piped())
-            .kill_on_drop(true)
-            .spawn()
-            .context("launching managed yt-dlp")?;
+            .arg(&task.source);
+        self.run_cli_command(task, cancellation, command).await
+    }
+    async fn run_external(&self, task: Download, cancellation: CancellationToken) -> Result<()> {
+        let executable = external_path(&task.engine)?;
+        // Isolate external engine output by task ID. Retrying uses the same directory.
+        let destination = self.downloads.join(&task.id);
+        tokio::fs::create_dir_all(&destination).await?;
+        let mut command = Command::new(executable);
+        let cap = self.transfer.get().await.cli_limit(&task.engine);
+        match task.engine.as_str() {
+            "aria2" => {
+                command.args(["--no-conf=true", "--continue=true", "--allow-overwrite=false",
+                    "--auto-file-renaming=false", "--enable-rpc=false", "--follow-torrent=false",
+                    "--follow-metalink=false", "--summary-interval=1", "--console-log-level=warn",
+                    "--download-result=hide", "--file-allocation=none"])
+                    .arg("--dir").arg(&destination);
+                if let Some(rate) = cap { command.arg(format!("--max-download-limit={rate}")); }
+            }
+            "gallery-dl" => {
+                command.arg("--config-ignore")
+                    .arg("--destination").arg(&destination);
+                if let Some(rate) = cap { command.arg("--limit-rate").arg(rate.to_string()); }
+            }
+            _ => bail!("unknown external engine"),
+        }
+        command.arg("--").arg(&task.source);
+        self.run_cli_command(task, cancellation, command).await
+    }
+    async fn run_cli_command(&self, task: Download, cancellation: CancellationToken,
+        mut command: Command) -> Result<()> {
+        if cancellation.is_cancelled() {
+            self.db.finish_cancelled(&task.id).await?;
+            return Ok(());
+        }
+        process_tree::configure(&mut command);
+        let mut child = command.stdin(Stdio::null()).stdout(Stdio::piped()).stderr(Stdio::piped())
+            .spawn().context("launching download engine")?;
+        let tree = match process_tree::ProcessTree::attach(&child) {
+            Ok(tree) => tree,
+            Err(error) => { let _ = child.kill().await; return Err(error); }
+        };
         let stderr = child.stderr.take().context("missing yt-dlp stderr")?;
         let stdout = child.stdout.take().context("missing yt-dlp stdout")?;
         let db_err = self.db.clone();
@@ -485,13 +537,28 @@ impl Worker {
         let status = tokio::select! {
             result = child.wait() => Some(result?),
             _ = cancellation.cancelled() => {
-                // Stop and reap the direct child; grandchildren require dedicated
-                // process-tree supervision (Windows Job Object/Unix process group).
-                let _ = child.kill().await;
+                if let Err(error) = tree.terminate() {
+                    tracing::warn!("process-tree termination failed: {error:#}");
+                    let _ = child.kill().await;
+                }
+                let _ = child.wait().await;
                 None
             }
         };
-        let _ = tokio::join!(err_reader, out_reader);
+        // A detached process holding a pipe must never keep a worker occupied.
+        // Job objects clean up remaining members when dropped on Windows.
+        drop(tree);
+        let mut err_reader = err_reader;
+        let mut out_reader = out_reader;
+        if tokio::time::timeout(Duration::from_secs(5), async {
+            let _ = tokio::join!(&mut err_reader, &mut out_reader);
+        }).await.is_err() { err_reader.abort(); out_reader.abort(); }
+        // For the external adapters, byte accounting is deliberately limited
+        // to completed local output size (not network traffic).
+        if status.as_ref().is_some_and(|s| s.success()) && task.engine != "yt-dlp" {
+            let size = directory_size(self.downloads.join(&task.id)).await?;
+            self.db.observe_received(&task.id, size).await?;
+        }
         if status.is_none() {
             self.db.finish_cancelled(&task.id).await?;
             return Ok(());
@@ -502,10 +569,46 @@ impl Worker {
             // A concurrent cancellation request can win just before completion.
             self.db.finish_cancelled(&task.id).await?;
         } else if !self.db.finish_cancelled(&task.id).await? {
-            anyhow::bail!("yt-dlp exited with {status}");
+            anyhow::bail!("{} exited with {status}", task.engine);
         }
         Ok(())
     }
+}
+/// Only administrator-installed executables are accepted. API clients cannot
+/// provide a command, binary path, or arbitrary arguments.
+fn external_path(engine: &str) -> Result<PathBuf> {
+    let (env_key, name) = match engine {
+        "aria2" => ("KORDRA_ARIA2_PATH", "aria2c"),
+        "gallery-dl" => ("KORDRA_GALLERY_DL_PATH", "gallery-dl"),
+        _ => bail!("unknown external engine"),
+    };
+    if let Some(path) = std::env::var_os(env_key) {
+        let path = PathBuf::from(path);
+        if path.is_absolute() && path.is_file() { return Ok(path); }
+        bail!("{env_key} must be an absolute executable file path");
+    }
+    let name = if cfg!(windows) { format!("{name}.exe") } else { name.into() };
+    if let Some(path) = std::env::var_os("PATH") {
+        for folder in std::env::split_paths(&path) {
+            if !folder.is_absolute() { continue; }
+            let candidate = folder.join(&name);
+            if candidate.is_file() { return Ok(candidate); }
+        }
+    }
+    bail!("{engine} is not installed; set {env_key} or install on PATH")
+}
+async fn directory_size(root: PathBuf) -> Result<u64> {
+    let mut stack = vec![root];
+    let mut bytes = 0u64;
+    while let Some(dir) = stack.pop() {
+        let mut entries = tokio::fs::read_dir(dir).await?;
+        while let Some(entry) = entries.next_entry().await? {
+            let ty = entry.file_type().await?;
+            if ty.is_dir() { stack.push(entry.path()); }
+            else if ty.is_file() { bytes = bytes.saturating_add(entry.metadata().await?.len()); }
+        }
+    }
+    Ok(bytes)
 }
 fn youtube_url(source: &str) -> bool {
     let Ok(url) = reqwest::Url::parse(source) else { return false; };
